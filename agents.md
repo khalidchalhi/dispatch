@@ -56,10 +56,10 @@ Guidance for any coding/research agent working in this repository.
 
 ## Environment and Execution Rules (Mandatory)
 
-1. For backend work, always use a Python virtual environment (`venv`) for installs and tests.
+1. For backend work, always use the project Python virtual environment (`venv`) for installs, tests, migrations, scripts, and all backend tooling.
 2. Never install backend dependencies globally on the host Python.
-3. Before backend testing, activate the project venv and run tools from that venv.
-4. Backend package installation and test execution must happen from the active venv.
+3. Before running backend tests, Alembic migrations, linting, type-checking, Celery workers, dev scripts, or one-off Python commands, activate the project venv and run tools from that venv.
+4. Backend package installation, test execution, migration generation/application, and backend maintenance commands must happen from the active venv or via the venv executables directly.
 
 PowerShell baseline flow:
 
@@ -72,6 +72,13 @@ pytest
 ```
 
 If the project uses `pyproject.toml`/Poetry/uv in a given branch, use the repo-defined flow, but still keep execution inside the project-managed virtual environment.
+
+If the shell is not activated, call the venv executables explicitly, for example:
+
+```powershell
+.\.venv\Scripts\python -m pytest
+.\.venv\Scripts\alembic upgrade head
+```
 
 ## Sprint Rule Compliance (Strict)
 

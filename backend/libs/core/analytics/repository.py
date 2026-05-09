@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,10 +77,38 @@ class AnalyticsRepository:
                 if cur_at_raw.tzinfo is not None
                 else cur_at_raw
             )
+            cur_uuid = str(UUID(cur_id))
+            dialect_name = ""
+            bind = self.session.get_bind()
+            if bind is not None:
+                dialect_name = bind.dialect.name
+            if dialect_name == "sqlite":
+                # SQLite UUID/date comparisons can behave inconsistently with tied timestamps.
+                # Keep ordering in SQL, then apply strict keyset filtering in Python.
+                stmt = stmt.where(Message.created_at <= cur_at).order_by(
+                    Message.created_at.desc(),
+                    Message.id.desc(),
+                )
+                result = await self.session.execute(stmt)
+                rows = list(result.scalars().all())
+                filtered: list[Message] = []
+                for row in rows:
+                    row_created_at = (
+                        row.created_at.replace(tzinfo=None)
+                        if row.created_at.tzinfo is not None
+                        else row.created_at
+                    )
+                    if row_created_at < cur_at or (
+                        row_created_at == cur_at and str(row.id) < cur_uuid
+                    ):
+                        filtered.append(row)
+                    if len(filtered) >= limit + 1:
+                        break
+                return filtered
             stmt = stmt.where(
                 or_(
                     Message.created_at < cur_at,
-                    and_(Message.created_at == cur_at, Message.id < cur_id),
+                    and_(Message.created_at == cur_at, Message.id < cur_uuid),
                 )
             )
         # fetch one extra to know whether a next page exists
@@ -115,13 +144,13 @@ class AnalyticsRepository:
             ).label("deliveries"),
             func.sum(
                 case(
-                    (and_(Message.bounce_type.is_not(None), Message.delivered_at >= since), 1),
+                    (and_(Message.bounce_type.is_not(None), Message.sent_at >= since), 1),
                     else_=0,
                 )
             ).label("bounces"),
             func.sum(
                 case(
-                    (and_(Message.complaint_type.is_not(None), Message.delivered_at >= since), 1),
+                    (and_(Message.complaint_type.is_not(None), Message.sent_at >= since), 1),
                     else_=0,
                 )
             ).label("complaints"),
@@ -156,13 +185,13 @@ class AnalyticsRepository:
             ).label("deliveries"),
             func.sum(
                 case(
-                    (and_(Message.bounce_type.is_not(None), Message.delivered_at >= since), 1),
+                    (and_(Message.bounce_type.is_not(None), Message.sent_at >= since), 1),
                     else_=0,
                 )
             ).label("bounces"),
             func.sum(
                 case(
-                    (and_(Message.complaint_type.is_not(None), Message.delivered_at >= since), 1),
+                    (and_(Message.complaint_type.is_not(None), Message.sent_at >= since), 1),
                     else_=0,
                 )
             ).label("complaints"),
@@ -190,13 +219,13 @@ class AnalyticsRepository:
             ).label("deliveries"),
             func.sum(
                 case(
-                    (and_(Message.bounce_type.is_not(None), Message.delivered_at >= since), 1),
+                    (and_(Message.bounce_type.is_not(None), Message.sent_at >= since), 1),
                     else_=0,
                 )
             ).label("bounces"),
             func.sum(
                 case(
-                    (and_(Message.complaint_type.is_not(None), Message.delivered_at >= since), 1),
+                    (and_(Message.complaint_type.is_not(None), Message.sent_at >= since), 1),
                     else_=0,
                 )
             ).label("complaints"),

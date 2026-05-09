@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 const command = process.execPath;
 const pnpmBootstrapArgs = process.env.npm_execpath
   ? [process.env.npm_execpath]
-  : [process.platform === "win32" ? "pnpm.cmd" : "pnpm"];
+  : [process.platform === "win32" ? "corepack.cmd" : "corepack", "pnpm"];
 const sharedEnv = {
   ...process.env,
   DISPATCH_WEB_APP_ORIGIN: "http://127.0.0.1:3000",

@@ -144,3 +144,4 @@ infra/.terraform.lock.hcl
 *.tmp
 *.orig
 .cache/
+datamouatassem.txt

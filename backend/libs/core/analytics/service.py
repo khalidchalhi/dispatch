@@ -94,6 +94,30 @@ class OverviewResult:
     last_updated_at: datetime
 
 
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float, str)):
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return None
+    return None
+
+
 def _to_rolling_window_stats(metric: RollingMetric) -> RollingWindowStats:
     return RollingWindowStats(
         window=metric.window,
@@ -134,7 +158,9 @@ class AnalyticsService:
         cache_key = f"analytics:campaign:{campaign_id}"
         cached = await self._get_cached(cache_key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            hydrated = self._hydrate_campaign_result(cached)
+            if hydrated is not None:
+                return hydrated
 
         async with UnitOfWork(self._session_factory) as uow:
             repo = AnalyticsRepository(uow.require_session())
@@ -170,7 +196,9 @@ class AnalyticsService:
         cache_key = f"analytics:domain:{domain_id}"
         cached = await self._get_cached(cache_key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            hydrated = self._hydrate_domain_result(cached)
+            if hydrated is not None:
+                return hydrated
 
         async with UnitOfWork(self._session_factory) as uow:
             repo = AnalyticsRepository(uow.require_session())
@@ -203,7 +231,9 @@ class AnalyticsService:
         cache_key = "analytics:overview"
         cached = await self._get_cached(cache_key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            hydrated = self._hydrate_overview_result(cached)
+            if hydrated is not None:
+                return hydrated
 
         async with UnitOfWork(self._session_factory) as uow:
             repo = AnalyticsRepository(uow.require_session())
@@ -354,14 +384,17 @@ class AnalyticsService:
         logger.info("analytics.account_rollup_done")
         return {"rows_upserted": len(account_windows)}
 
-    async def _get_cached(self, key: str) -> object | None:
+    async def _get_cached(self, key: str) -> dict[str, object] | None:
         if self._redis is None:
             return None
         try:
             raw = await self._redis.get(key)
             if raw is None:
                 return None
-            return json.loads(raw)
+            loaded = json.loads(raw)
+            if isinstance(loaded, dict):
+                return loaded
+            return None
         except Exception:
             return None
 
@@ -372,6 +405,161 @@ class AnalyticsService:
             await self._redis.setex(key, _CACHE_TTL_SECONDS, json.dumps(value, default=str))
         except Exception:
             pass
+
+    @staticmethod
+    def _hydrate_rolling_window(item: object) -> RollingWindowStats | None:
+        if not isinstance(item, dict):
+            return None
+        window_end = _parse_datetime(item.get("window_end"))
+        if window_end is None:
+            return None
+        window = item.get("window")
+        if not isinstance(window, str):
+            return None
+        return RollingWindowStats(
+            window=window,
+            sends=int(item.get("sends", 0)),
+            deliveries=int(item.get("deliveries", 0)),
+            bounces=int(item.get("bounces", 0)),
+            complaints=int(item.get("complaints", 0)),
+            opens=int(item.get("opens", 0)),
+            clicks=int(item.get("clicks", 0)),
+            bounce_rate=_parse_decimal(item.get("bounce_rate")),
+            complaint_rate=_parse_decimal(item.get("complaint_rate")),
+            window_end=window_end,
+        )
+
+    def _hydrate_campaign_result(
+        self,
+        payload: dict[str, object],
+    ) -> CampaignAnalyticsResult | None:
+        rolling_payload = payload.get("rolling_windows")
+        if not isinstance(rolling_payload, list):
+            return None
+        rolling: list[RollingWindowStats] = []
+        for entry in rolling_payload:
+            hydrated = self._hydrate_rolling_window(entry)
+            if hydrated is None:
+                return None
+            rolling.append(hydrated)
+        last_updated_at = _parse_datetime(payload.get("last_updated_at"))
+        if last_updated_at is None:
+            return None
+        campaign_id = payload.get("campaign_id")
+        campaign_name = payload.get("campaign_name")
+        status = payload.get("status")
+        if (
+            not isinstance(campaign_id, str)
+            or not isinstance(campaign_name, str)
+            or not isinstance(status, str)
+        ):
+            return None
+        return CampaignAnalyticsResult(
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            status=status,
+            total_sent=int(payload.get("total_sent", 0)),
+            total_delivered=int(payload.get("total_delivered", 0)),
+            total_bounced=int(payload.get("total_bounced", 0)),
+            total_complained=int(payload.get("total_complained", 0)),
+            total_opened=int(payload.get("total_opened", 0)),
+            total_clicked=int(payload.get("total_clicked", 0)),
+            total_replied=int(payload.get("total_replied", 0)),
+            total_unsubscribed=int(payload.get("total_unsubscribed", 0)),
+            rolling_windows=rolling,
+            last_updated_at=last_updated_at,
+        )
+
+    def _hydrate_domain_result(self, payload: dict[str, object]) -> DomainAnalyticsResult | None:
+        rolling_payload = payload.get("rolling_windows")
+        if not isinstance(rolling_payload, list):
+            return None
+        rolling: list[RollingWindowStats] = []
+        for entry in rolling_payload:
+            hydrated = self._hydrate_rolling_window(entry)
+            if hydrated is None:
+                return None
+            rolling.append(hydrated)
+        last_updated_at = _parse_datetime(payload.get("last_updated_at"))
+        if last_updated_at is None:
+            return None
+        domain_id = payload.get("domain_id")
+        domain_name = payload.get("domain_name")
+        reputation_status = payload.get("reputation_status")
+        circuit_breaker_state_obj = payload.get("circuit_breaker_state")
+        if (
+            not isinstance(domain_id, str)
+            or not isinstance(domain_name, str)
+            or not isinstance(reputation_status, str)
+        ):
+            return None
+        circuit_breaker_state = (
+            circuit_breaker_state_obj
+            if isinstance(circuit_breaker_state_obj, str) or circuit_breaker_state_obj is None
+            else None
+        )
+        return DomainAnalyticsResult(
+            domain_id=domain_id,
+            domain_name=domain_name,
+            reputation_status=reputation_status,
+            circuit_breaker_state=circuit_breaker_state,
+            rolling_windows=rolling,
+            last_updated_at=last_updated_at,
+        )
+
+    def _hydrate_overview_result(self, payload: dict[str, object]) -> OverviewResult | None:
+        top_campaigns_payload = payload.get("top_campaigns")
+        top_failing_payload = payload.get("top_failing_domains")
+        if not isinstance(top_campaigns_payload, list) or not isinstance(top_failing_payload, list):
+            return None
+        top_campaigns: list[TopCampaignStats] = []
+        for entry in top_campaigns_payload:
+            if not isinstance(entry, dict):
+                return None
+            campaign_id = entry.get("campaign_id")
+            name = entry.get("name")
+            if not isinstance(campaign_id, str) or not isinstance(name, str):
+                return None
+            top_campaigns.append(
+                TopCampaignStats(
+                    campaign_id=campaign_id,
+                    name=name,
+                    sends_today=int(entry.get("sends_today", 0)),
+                    delivered=int(entry.get("delivered", 0)),
+                )
+            )
+        top_failing_domains: list[TopFailingDomainStats] = []
+        for entry in top_failing_payload:
+            if not isinstance(entry, dict):
+                return None
+            domain_id = entry.get("domain_id")
+            name = entry.get("name")
+            if not isinstance(domain_id, str) or not isinstance(name, str):
+                return None
+            cb_state_obj = entry.get("circuit_breaker_state")
+            circuit_breaker_state = (
+                cb_state_obj
+                if isinstance(cb_state_obj, str) or cb_state_obj is None
+                else None
+            )
+            top_failing_domains.append(
+                TopFailingDomainStats(
+                    domain_id=domain_id,
+                    name=name,
+                    bounce_rate=_parse_decimal(entry.get("bounce_rate")),
+                    circuit_breaker_state=circuit_breaker_state,
+                )
+            )
+        last_updated_at = _parse_datetime(payload.get("last_updated_at"))
+        if last_updated_at is None:
+            return None
+        return OverviewResult(
+            sends_today=int(payload.get("sends_today", 0)),
+            sends_7d=int(payload.get("sends_7d", 0)),
+            top_campaigns=top_campaigns,
+            top_failing_domains=top_failing_domains,
+            last_updated_at=last_updated_at,
+        )
 
 
 @lru_cache(maxsize=1)

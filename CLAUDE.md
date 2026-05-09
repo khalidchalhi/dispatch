@@ -21,7 +21,9 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-All backend commands run from the `backend/` directory (where `pyproject.toml` and `Makefile` live). Always activate the venv first — never install packages globally.
+All backend commands run from the `backend/` directory (where `pyproject.toml` and `Makefile` live). Always activate the project virtual environment first — never install packages globally.
+
+This rule applies to every backend-related command, including tests, migrations, linting, type-checking, Celery workers, dev scripts, one-off Python commands, dependency installs, and Alembic operations. Use the venv executables directly if the shell is not activated, for example `.\.venv\Scripts\python -m pytest` or `.\.venv\Scripts\alembic upgrade head`.
 
 ```bash
 make dev                          # Start full local environment (Docker Compose)
