@@ -26,6 +26,14 @@ from libs.core.templates.schemas import (
 _ARCHIVE_PREFIX = "__dispatch_archived__"
 _MERGE_TAG_TOKEN_PATTERN = re.compile(r"\{\{\s*(.*?)\s*\}\}", re.DOTALL)
 _MERGE_TAG_EXPRESSION_PATTERN = re.compile(r"contact(?:\.[A-Za-z][A-Za-z0-9_]*)+")
+_AVAILABLE_MERGE_TAGS: list[tuple[str, str]] = [
+    ("{{contact.first_name}}", "First name"),
+    ("{{contact.last_name}}", "Last name"),
+    ("{{contact.email}}", "Email"),
+    ("{{contact.company}}", "Company"),
+    ("{{contact.title}}", "Job title"),
+    ("{{contact.unsubscribe_url}}", "Unsubscribe URL"),
+]
 
 
 class _LockedDownSandbox(SandboxedEnvironment):
@@ -400,6 +408,69 @@ class TemplateService:
             version_number=version_number,
         )
         raise ConflictError("Template versions are immutable")
+
+    async def publish_template_version(
+        self,
+        *,
+        actor: CurrentActor,
+        template_id: str,
+        version_number: int,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> TemplateRecord:
+        self._require_admin(actor)
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = TemplateRepository(uow.require_session())
+            template = await repo.get_template_by_id(template_id)
+            if template is None:
+                raise NotFoundError("Template not found")
+
+            archive_state = self._decode_archive_state(template.category)
+            if archive_state.is_archived:
+                raise ConflictError("Cannot publish a version for an archived template")
+
+            version = await repo.get_template_version_by_number(
+                template_id=template_id,
+                version_number=version_number,
+            )
+            if version is None:
+                raise NotFoundError("Template version not found")
+
+            await repo.unpublish_all_versions(template_id=template_id)
+            await repo.publish_version(
+                template_id=template_id,
+                version_number=version_number,
+            )
+            versions = await repo.list_template_versions(template_id=template_id)
+            await AuthRepository(uow.require_session()).write_audit_log(
+                actor_type=actor.actor_type,
+                actor_id=actor.user.id,
+                action="template.version.publish",
+                resource_type="template_version",
+                resource_id=version.id,
+                after_state={
+                    "template_id": template_id,
+                    "version_number": version_number,
+                    "published": True,
+                },
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            return TemplateRecord(
+                template=template,
+                versions=versions,
+                category=archive_state.category,
+                is_archived=False,
+                head_version_number=version_number,
+            )
+
+    async def list_available_merge_tags(
+        self,
+        *,
+        actor: CurrentActor,
+    ) -> list[dict[str, str]]:
+        self._require_admin(actor)
+        return [{"tag": tag, "label": label} for tag, label in _AVAILABLE_MERGE_TAGS]
 
     def _render_string(self, value: str, *, sample_contact: dict[str, Any]) -> str:
         self._validate_template_string(value)

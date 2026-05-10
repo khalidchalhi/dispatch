@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     ses_region: str = "us-east-1"
     ses_sns_topic_arn: str = "arn:aws:sns:us-east-1:000000000000:dispatch-local-events"
-    domain_provisioning_poll_interval_seconds: int = Field(default=10, ge=1, le=120)
+    domain_provisioning_poll_interval_seconds: int = Field(default=30, ge=1, le=120)
     domain_provisioning_timeout_seconds: int = Field(default=300, ge=30, le=3600)
 
     default_domain_hourly_rate_limit: int = 150

@@ -19,6 +19,7 @@ import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
 import { formatTimestamp } from "@/lib/formatters";
 import { newEmptyDsl } from "../_lib/segments-queries";
+import { toSegment, type ApiSegmentsListResponse } from "../_lib/segments-api";
 import type { Segment } from "@/types/segment";
 
 type SegmentsManagerProps = {
@@ -36,6 +37,11 @@ export function SegmentsManager({ initialSegments }: SegmentsManagerProps) {
 
   const active = segments.filter((s) => !s.isArchived);
 
+  async function refreshSegments() {
+    const response = await clientJson<ApiSegmentsListResponse>(apiEndpoints.segments.list);
+    setSegments(response.items.map(toSegment));
+  }
+
   async function handleCreate() {
     if (!newName.trim()) return;
     setIsCreating(true);
@@ -45,7 +51,7 @@ export function SegmentsManager({ initialSegments }: SegmentsManagerProps) {
         body: {
           name: newName.trim(),
           description: newDescription.trim() || null,
-          dslJson: newEmptyDsl(),
+          dsl_json: newEmptyDsl(),
         },
       });
       toast.success("Segment created.");
@@ -63,11 +69,11 @@ export function SegmentsManager({ initialSegments }: SegmentsManagerProps) {
 
   async function handleDuplicate(segment: Segment) {
     try {
-      const duped = await clientJson<Segment>(
+      await clientJson<Segment>(
         apiEndpoints.segments.duplicate(segment.id),
         { method: "POST" },
       );
-      setSegments((prev) => [...prev, duped]);
+      await refreshSegments();
       toast.success(`"${segment.name}" duplicated.`);
     } catch {
       toast.error("Failed to duplicate segment.");

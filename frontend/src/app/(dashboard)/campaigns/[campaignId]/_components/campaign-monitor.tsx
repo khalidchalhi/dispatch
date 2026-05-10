@@ -9,20 +9,37 @@ import { MessageDrawer } from "./message-drawer";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
 import {
-  getMockCampaignDetail,
-  getMockMessagesPage,
-  getMockMessageDetail,
-} from "@/app/(dashboard)/campaigns/_lib/campaigns-queries";
+  mergeCampaignDetailFromApi,
+  type CampaignByIdApiResponse,
+} from "@/app/(dashboard)/campaigns/_lib/campaigns-api";
 import type {
   CampaignDetail,
   CampaignMessage,
   CampaignMessageDetail,
   CampaignStatus,
+  MessageStatus,
   MessagesPage,
 } from "@/types/campaign";
 import type { BreakerEntryState } from "@/types/ops";
 
 const POLL_INTERVAL_MS = 15_000;
+const MESSAGES_PAGE_SIZE = 50;
+const MAX_DRAWER_PAGES = 20;
+
+type CampaignMessagesApiResponse = {
+  items: Array<{
+    message_id: string;
+    campaign_id: string | null;
+    to_email: string;
+    status: string;
+    has_bounce: boolean;
+    has_click: boolean;
+    has_complaint: boolean;
+    ses_message_id: string | null;
+    last_event_at: string;
+  }>;
+  next_cursor: string | null;
+};
 
 type CampaignMonitorProps = {
   initialDetail: CampaignDetail;
@@ -31,6 +48,45 @@ type CampaignMonitorProps = {
   domainId?: string;
 };
 
+function toMessageStatus(value: string): MessageStatus {
+  if (value === "queued") return "queued";
+  if (value === "sending") return "sending";
+  if (value === "sent") return "sent";
+  if (value === "delivered") return "delivered";
+  if (value === "opened") return "opened";
+  if (value === "clicked") return "clicked";
+  if (value === "bounced") return "bounced";
+  if (value === "complained") return "complained";
+  return "failed";
+}
+
+function toCampaignMessage(
+  campaignId: string,
+  item: CampaignMessagesApiResponse["items"][number],
+): CampaignMessage {
+  return {
+    id: item.message_id,
+    campaignId: item.campaign_id ?? campaignId,
+    email: item.to_email,
+    status: toMessageStatus(item.status),
+    lastEventAt: item.last_event_at,
+    hasBounce: item.has_bounce,
+    hasClick: item.has_click,
+    hasComplaint: item.has_complaint,
+    sesMessageId: item.ses_message_id,
+  };
+}
+
+function toDrawerDetail(message: CampaignMessage): CampaignMessageDetail {
+  return {
+    ...message,
+    contactId: "Unavailable",
+    senderProfileName: "Unavailable",
+    events: [],
+    renderedHtml: null,
+  };
+}
+
 export function CampaignMonitor({
   initialDetail,
   initialPage,
@@ -38,22 +94,19 @@ export function CampaignMonitor({
   domainId,
 }: CampaignMonitorProps) {
   const [detail, setDetail] = useState<CampaignDetail>(initialDetail);
-  const [messages, setMessages] = useState<CampaignMessage[]>(
-    initialPage.messages,
-  );
-  const [nextCursor, setNextCursor] = useState<string | null>(
-    initialPage.nextCursor,
-  );
+  const [messages, setMessages] = useState<CampaignMessage[]>(initialPage.messages);
+  const [nextCursor, setNextCursor] = useState<string | null>(initialPage.nextCursor);
   const [statusFilter, setStatusFilter] = useState("");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [isRequeuing, setIsRequeuing] = useState(false);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
-  const [messageDetail, setMessageDetail] =
-    useState<CampaignMessageDetail | null>(null);
+  const [messageDetail, setMessageDetail] = useState<CampaignMessageDetail | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isDrawerLoading, setIsDrawerLoading] = useState(false);
+  const [isRequeuingMessage, setIsRequeuingMessage] = useState(false);
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isHiddenRef = useRef(false);
+  const isPollingRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -62,17 +115,28 @@ export function CampaignMonitor({
     }
   }, []);
 
-  const pollDetail = useCallback(() => {
-    if (isHiddenRef.current) return;
-    // In production this would be a real API call.
-    // Here we re-derive from mock data so the detail stays fresh.
-    const fresh = getMockCampaignDetail(initialDetail.id);
-    setDetail(fresh);
-  }, [initialDetail.id]);
+  const pollDetail = useCallback(async () => {
+    if (isHiddenRef.current || isPollingRef.current) return;
+
+    isPollingRef.current = true;
+    try {
+      const fresh = await clientJson<CampaignByIdApiResponse>(
+        apiEndpoints.campaigns.byId(detail.id),
+      );
+      setDetail((prev) => mergeCampaignDetailFromApi(prev, fresh));
+    } catch {
+      // polling noise intentionally suppressed
+    } finally {
+      isPollingRef.current = false;
+    }
+  }, [detail.id]);
 
   const startPolling = useCallback(() => {
     stopPolling();
-    pollTimerRef.current = setInterval(pollDetail, POLL_INTERVAL_MS);
+    pollTimerRef.current = setInterval(() => {
+      void pollDetail();
+    }, POLL_INTERVAL_MS);
+    void pollDetail();
   }, [pollDetail, stopPolling]);
 
   useEffect(() => {
@@ -81,18 +145,59 @@ export function CampaignMonitor({
     } else {
       stopPolling();
     }
-
     return stopPolling;
   }, [detail.status, startPolling, stopPolling]);
 
   useEffect(() => {
     function handleVisibilityChange() {
       isHiddenRef.current = document.visibilityState === "hidden";
+      if (isHiddenRef.current) {
+        stopPolling();
+      } else if (detail.status === "running") {
+        startPolling();
+      }
     }
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
+    return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, []);
+    };
+  }, [detail.status, startPolling, stopPolling]);
+
+  const fetchMessagesPage = useCallback(
+    async (cursor: string | null, filter: string) => {
+      const response = await clientJson<CampaignMessagesApiResponse>(
+        apiEndpoints.campaigns.messages(detail.id),
+        {
+          query: {
+            limit: MESSAGES_PAGE_SIZE,
+            cursor: cursor ?? undefined,
+            status: filter || undefined,
+          },
+        },
+      );
+      return {
+        messages: response.items.map((item) => toCampaignMessage(detail.id, item)),
+        nextCursor: response.next_cursor,
+      };
+    },
+    [detail.id],
+  );
+
+  const refreshMessages = useCallback(
+    async (filter: string) => {
+      const page = await fetchMessagesPage(null, filter);
+      setMessages(page.messages);
+      setNextCursor(page.nextCursor);
+      return page;
+    },
+    [fetchMessagesPage],
+  );
+
+  useEffect(() => {
+    void refreshMessages(statusFilter).catch(() => {
+      // Keep initial messages if refresh fails.
+    });
+  }, [refreshMessages, statusFilter]);
 
   function handleStatusChange(newStatus: CampaignStatus) {
     setDetail((prev) => ({ ...prev, status: newStatus }));
@@ -100,63 +205,76 @@ export function CampaignMonitor({
 
   function handleStatusFilterChange(value: string) {
     setStatusFilter(value);
-    const page = getMockMessagesPage(
-      detail.id,
-      null,
-      value || null,
-    );
-    setMessages(page.messages);
-    setNextCursor(page.nextCursor);
   }
 
-  function handleLoadMore() {
+  async function handleLoadMore() {
     if (!nextCursor || isLoadingMore) return;
     setIsLoadingMore(true);
     try {
-      const page = getMockMessagesPage(
-        detail.id,
-        nextCursor,
-        statusFilter || null,
-      );
+      const page = await fetchMessagesPage(nextCursor, statusFilter);
       setMessages((prev) => [...prev, ...page.messages]);
       setNextCursor(page.nextCursor);
+    } catch {
+      toast.error("Failed to load more messages.");
     } finally {
       setIsLoadingMore(false);
     }
   }
 
-  async function handleBulkRequeue(ids: string[]) {
-    if (isRequeuing) return;
-    setIsRequeuing(true);
+  async function hydrateDrawerMessage(messageId: string) {
+    setIsDrawerLoading(true);
     try {
-      await clientJson(apiEndpoints.campaigns.bulkRequeue(detail.id), {
-        method: "POST",
-        body: { messageIds: ids },
-      });
-      toast.success(`${ids.length} message${ids.length === 1 ? "" : "s"} re-queued.`);
-      // Optimistically mark as queued
-      setMessages((prev) =>
-        prev.map((m) =>
-          ids.includes(m.id) ? { ...m, status: "queued" as const } : m,
-        ),
-      );
+      let cursor: string | null = null;
+      for (let pageIndex = 0; pageIndex < MAX_DRAWER_PAGES; pageIndex += 1) {
+        const page = await fetchMessagesPage(cursor, statusFilter);
+        const found = page.messages.find((message) => message.id === messageId);
+        if (found) {
+          setMessageDetail(toDrawerDetail(found));
+          return;
+        }
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+
+      setMessageDetail(null);
+      toast.error("Message could not be loaded.");
     } catch {
-      toast.error("Re-queue failed. Please retry.");
+      setMessageDetail(null);
+      toast.error("Failed to load message details.");
     } finally {
-      setIsRequeuing(false);
+      setIsDrawerLoading(false);
     }
   }
 
   function handleSelectMessage(id: string) {
     setSelectedMessageId(id);
-    const found = getMockMessageDetail(detail.id, id);
-    setMessageDetail(found);
     setDrawerOpen(true);
+    void hydrateDrawerMessage(id);
   }
 
   function handleCloseDrawer() {
     setDrawerOpen(false);
     setSelectedMessageId(null);
+  }
+
+  async function handleRequeueSelectedMessage() {
+    if (!messageDetail || isRequeuingMessage) return;
+    setIsRequeuingMessage(true);
+    try {
+      await clientJson(
+        apiEndpoints.campaigns.messageRequeue(detail.id, messageDetail.id),
+        { method: "POST" },
+      );
+      toast.success("Message re-queued.");
+      await refreshMessages(statusFilter);
+      setMessageDetail((prev) =>
+        prev ? { ...prev, status: "queued", hasBounce: false, hasComplaint: false } : prev,
+      );
+    } catch {
+      toast.error("Re-queue failed. Please retry.");
+    } finally {
+      setIsRequeuingMessage(false);
+    }
   }
 
   return (
@@ -177,13 +295,14 @@ export function CampaignMonitor({
         isLoadingMore={isLoadingMore}
         selectedMessageId={selectedMessageId}
         onSelectMessage={handleSelectMessage}
-        onBulkRequeue={handleBulkRequeue}
-        isRequeuing={isRequeuing}
       />
       <MessageDrawer
         detail={messageDetail}
         open={drawerOpen}
         onClose={handleCloseDrawer}
+        onRequeue={handleRequeueSelectedMessage}
+        isRequeuing={isRequeuingMessage}
+        isLoading={isDrawerLoading}
       />
     </div>
   );

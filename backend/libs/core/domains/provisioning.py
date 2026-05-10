@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol, cast
 
 from libs.core.config import Settings
@@ -111,6 +112,22 @@ class DomainProvisioningStatus:
             completed_at=completed_at,
             steps=steps,
         )
+
+
+class DomainProvisioningFailureReason(StrEnum):
+    DOMAIN_PROVISIONING_FAILED = "domain_provisioning_failed"
+    EXTERNAL_SERVICE_ERROR = "external_service_error"
+    DNS_AUTHENTICATION_ERROR = "dns_authentication_error"
+    DNS_RATE_LIMITED = "dns_rate_limited"
+    DNS_ZONE_NOT_FOUND = "dns_zone_not_found"
+    SES_IDENTITY_SETUP_FAILED = "ses_identity_setup_failed"
+    SES_CONFIGURATION_SET_FAILED = "ses_configuration_set_failed"
+    SES_MAIL_FROM_FAILED = "ses_mail_from_failed"
+    DNS_RECORD_SYNC_FAILED = "dns_record_sync_failed"
+    DNS_RECORD_APPLY_FAILED = "dns_record_apply_failed"
+    SES_VERIFICATION_FAILED = "ses_verification_failed"
+    SES_VERIFICATION_TIMEOUT = "ses_verification_timeout"
+    DNS_VERIFICATION_FAILED = "dns_verification_failed"
 
 
 @dataclass(frozen=True, slots=True)

@@ -226,30 +226,31 @@ async def test_worker_provision_domain_flow_failure_sets_provisioning_failed(
 
     result = domain_tasks.provision_domain(domain_id, enqueue.run_id)
     assert result["status"] == "failed"
-    assert result["reason_code"] == "external_service_error"
+    assert result["reason_code"] == "dns_record_apply_failed"
 
     refreshed = await service.get_domain(domain_id)
     assert refreshed.domain.verification_status == "provisioning_failed"
     status = await service.get_domain_provisioning_status(domain_id=domain_id)
     assert status.status == "failed"
-    assert status.reason_code == "external_service_error"
+    assert status.reason_code == "dns_record_apply_failed"
 
 
 @pytest.mark.parametrize(
-    "failing_step",
+    ("failing_step", "expected_reason"),
     [
-        "create_ses_identity",
-        "ensure_configuration_set",
-        "configure_mail_from",
-        "sync_dns_records",
-        "apply_dns_records",
-        "poll_ses_verification",
-        "verify_dns_state",
+        ("create_ses_identity", "ses_identity_setup_failed"),
+        ("ensure_configuration_set", "ses_configuration_set_failed"),
+        ("configure_mail_from", "ses_mail_from_failed"),
+        ("sync_dns_records", "dns_record_sync_failed"),
+        ("apply_dns_records", "dns_record_apply_failed"),
+        ("poll_ses_verification", "ses_verification_failed"),
+        ("verify_dns_state", "dns_verification_failed"),
     ],
 )
 @pytest.mark.asyncio
 async def test_worker_provision_domain_flow_chaos_step_failures(
     failing_step: str,
+    expected_reason: str,
     auth_test_context: AuthTestContext,
     auth_user_factory: UserFactory,
     monkeypatch: Any,
@@ -310,12 +311,12 @@ async def test_worker_provision_domain_flow_chaos_step_failures(
 
     result = domain_tasks.provision_domain(domain_id, enqueue.run_id)
     assert result["status"] == "failed"
-    assert result["reason_code"] == "external_service_error"
+    assert result["reason_code"] == expected_reason
 
     refreshed = await service.get_domain(domain_id)
     assert refreshed.domain.verification_status == "provisioning_failed"
     status = await service.get_domain_provisioning_status(domain_id=domain_id)
     assert status.status == "failed"
-    assert status.reason_code == "external_service_error"
+    assert status.reason_code == expected_reason
     assert any(step.name == failing_step and step.status == "running" for step in status.steps)
     assert any(step.name == "failed" and step.status == "failed" for step in status.steps)

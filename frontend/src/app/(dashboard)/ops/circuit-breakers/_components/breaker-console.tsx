@@ -1,17 +1,24 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { Fragment, useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatTimestamp } from "@/lib/formatters";
+import { clientJson } from "@/lib/api/client";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
 import {
-  getBreakerMatrix,
-  getBreakerTimeline,
-} from "@/app/(dashboard)/ops/_lib/ops-queries";
+  type BreakerListApiResponse,
+  toBreakerEntries,
+} from "@/app/(dashboard)/ops/_lib/circuit-breakers-api";
 import { ResetDialog } from "./reset-dialog";
-import type { BreakerEntry, BreakerEntryState, BreakerScope, BreakerTripEvent } from "@/types/ops";
+import type {
+  BreakerEntry,
+  BreakerEntryState,
+  BreakerScope,
+  BreakerTripEvent,
+} from "@/types/ops";
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -35,10 +42,7 @@ const reasonLabel: Record<string, string> = {
   high_complaint_rate: "High complaint rate",
 };
 
-const stateVariant: Record<
-  BreakerEntryState,
-  "danger" | "warning" | "success"
-> = {
+const stateVariant: Record<BreakerEntryState, "danger" | "warning" | "success"> = {
   open: "danger",
   half_open: "warning",
   closed: "success",
@@ -54,9 +58,45 @@ const FILTER_OPTIONS: { value: FilterValue; label: string }[] = [
   { value: "high_complaint_rate", label: "High complaint" },
 ];
 
+type BreakerTimelineApiResponse = {
+  items?: Array<{
+    id?: string;
+    breaker_id?: string;
+    breakerId?: string;
+    type?: string;
+    occurred_at?: string;
+    occurredAt?: string;
+    actor?: string | null;
+    justification?: string | null;
+    bounce_rate_pct?: number | null;
+    bounceRatePct?: number | null;
+    complaint_rate_pct?: number | null;
+    complaintRatePct?: number | null;
+  }>;
+};
+
 function isWithin24h(ts: string | null): boolean {
   if (!ts) return false;
   return Date.now() - new Date(ts).getTime() < 24 * 60 * 60 * 1000;
+}
+
+function toTripEvents(
+  response: BreakerTimelineApiResponse,
+  breakerId: string,
+): BreakerTripEvent[] {
+  return (response.items ?? []).map((item, index) => ({
+    id: item.id ?? `${breakerId}-event-${index}`,
+    breakerId: item.breaker_id ?? item.breakerId ?? breakerId,
+    type:
+      item.type === "reset" || item.type === "auto_reset"
+        ? item.type
+        : "tripped",
+    occurredAt: item.occurred_at ?? item.occurredAt ?? new Date().toISOString(),
+    actor: item.actor ?? null,
+    justification: item.justification ?? null,
+    bounceRatePct: item.bounce_rate_pct ?? item.bounceRatePct ?? null,
+    complaintRatePct: item.complaint_rate_pct ?? item.complaintRatePct ?? null,
+  }));
 }
 
 type BreakerConsoleProps = {
@@ -69,26 +109,34 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [timelines, setTimelines] = useState<Record<string, BreakerTripEvent[]>>({});
   const [resetEntry, setResetEntry] = useState<BreakerEntry | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<string>(
-    new Date().toISOString(),
-  );
+  const [updatedAt, setUpdatedAt] = useState<string>(new Date().toISOString());
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isHiddenRef = useRef(false);
 
-  const poll = useCallback(() => {
+  const poll = useCallback(async () => {
     if (isHiddenRef.current) return;
-    const fresh = getBreakerMatrix();
-    setEntries(fresh);
-    setUpdatedAt(new Date().toISOString());
+    try {
+      const response = await clientJson<BreakerListApiResponse>(
+        ENDPOINTS.circuitBreakers.list,
+        { redirectOnUnauthorized: false },
+      );
+      if (Array.isArray(response.items)) {
+        setEntries(toBreakerEntries(response));
+        setUpdatedAt(new Date().toISOString());
+      }
+    } catch {
+      // Keep previous state on transient failures.
+    }
   }, []);
 
   useEffect(() => {
-    pollTimerRef.current = setInterval(poll, POLL_INTERVAL_MS);
+    void poll();
+    pollTimerRef.current = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
     function onVisibility() {
       isHiddenRef.current = document.visibilityState === "hidden";
-      if (!isHiddenRef.current) poll();
+      if (!isHiddenRef.current) void poll();
     }
     document.addEventListener("visibilitychange", onVisibility);
 
@@ -105,56 +153,60 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
     }
     setExpandedId(id);
     if (!timelines[id]) {
-      setTimelines((prev) => ({ ...prev, [id]: getBreakerTimeline(id) }));
+      void (async () => {
+        try {
+          const response = await clientJson<BreakerTimelineApiResponse>(
+            `${ENDPOINTS.circuitBreakers.byId(id)}/timeline`,
+            { redirectOnUnauthorized: false },
+          );
+          setTimelines((prev) => ({ ...prev, [id]: toTripEvents(response, id) }));
+        } catch {
+          setTimelines((prev) => ({ ...prev, [id]: [] }));
+        }
+      })();
     }
   }
 
-  function handleReset(breakerId: string) {
-    setEntries((prev) =>
-      prev.map((e) =>
-        e.id === breakerId
-          ? { ...e, state: "closed", trippedAt: null, reason: null }
-          : e,
-      ),
-    );
+  async function handleReset(_: string) {
+    await poll();
     setResetEntry(null);
   }
 
-  const filtered = entries.filter((e) => {
-    if (filter === "open") return e.state === "open";
-    if (filter === "last_24h") return isWithin24h(e.trippedAt);
-    if (filter === "high_bounce_rate") return e.reason === "high_bounce_rate";
-    if (filter === "high_complaint_rate") return e.reason === "high_complaint_rate";
+  const filtered = entries.filter((entry) => {
+    if (filter === "open") return entry.state === "open";
+    if (filter === "last_24h") return isWithin24h(entry.trippedAt);
+    if (filter === "high_bounce_rate") return entry.reason === "high_bounce_rate";
+    if (filter === "high_complaint_rate") return entry.reason === "high_complaint_rate";
     return true;
   });
 
   const grouped = scopeOrder.reduce<Record<BreakerScope, BreakerEntry[]>>(
     (acc, scope) => {
-      acc[scope] = filtered.filter((e) => e.scope === scope);
+      acc[scope] = filtered.filter((entry) => entry.scope === scope);
       return acc;
     },
     { domain: [], ip_pool: [], sender_profile: [], account: [] },
   );
 
-  const openCount = entries.filter((e) => e.state === "open").length;
+  const openCount = entries.filter((entry) => entry.state === "open").length;
 
   return (
     <div className="grid gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {FILTER_OPTIONS.map((opt) => (
+          {FILTER_OPTIONS.map((option) => (
             <button
-              key={opt.value}
+              key={option.value}
               type="button"
-              onClick={() => setFilter(opt.value)}
-              aria-pressed={filter === opt.value}
+              onClick={() => setFilter(option.value)}
+              aria-pressed={filter === option.value}
               className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                filter === opt.value
+                filter === option.value
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border text-text-muted hover:text-foreground"
               }`}
             >
-              {opt.label}
+              {option.label}
             </button>
           ))}
         </div>
@@ -200,9 +252,8 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                 </thead>
                 <tbody>
                   {scopeRows.map((entry) => (
-                    <>
+                    <Fragment key={entry.id}>
                       <tr
-                        key={entry.id}
                         className={`border-b border-border/50 ${entry.state === "open" ? "bg-danger/5" : ""}`}
                       >
                         <td className="py-2 pr-4 font-medium">
@@ -220,10 +271,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                                 <ChevronRight className="h-3.5 w-3.5" aria-hidden />
                               )}
                             </button>
-                            <Link
-                              href={entry.entityHref}
-                              className="hover:underline"
-                            >
+                            <Link href={entry.entityHref} className="hover:underline">
                               {entry.entityName}
                             </Link>
                           </div>
@@ -234,9 +282,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                           </Badge>
                         </td>
                         <td className="py-2 pr-4 text-text-muted">
-                          {entry.trippedAt
-                            ? formatTimestamp(entry.trippedAt)
-                            : "—"}
+                          {entry.trippedAt ? formatTimestamp(entry.trippedAt) : "—"}
                         </td>
                         <td className="py-2 pr-4">
                           {entry.reason ? (
@@ -278,7 +324,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                         </td>
                       </tr>
                       {expandedId === entry.id && (
-                        <tr key={`${entry.id}-timeline`}>
+                        <tr>
                           <td colSpan={6} className="pb-3 pl-6 pr-4">
                             <div
                               id={`timeline-${entry.id}`}
@@ -287,14 +333,12 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                               <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-muted">
                                 Trip timeline
                               </h3>
-                              <TripTimeline
-                                events={timelines[entry.id] ?? []}
-                              />
+                              <TripTimeline events={timelines[entry.id] ?? []} />
                             </div>
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -323,10 +367,7 @@ function TripTimeline({ events }: { events: BreakerTripEvent[] }) {
     return <p className="text-sm text-text-muted">No history recorded.</p>;
   }
 
-  const eventVariant: Record<
-    BreakerTripEvent["type"],
-    "danger" | "success" | "muted"
-  > = {
+  const eventVariant: Record<BreakerTripEvent["type"], "danger" | "success" | "muted"> = {
     tripped: "danger",
     reset: "success",
     auto_reset: "muted",
@@ -340,24 +381,22 @@ function TripTimeline({ events }: { events: BreakerTripEvent[] }) {
 
   return (
     <ol className="grid gap-2">
-      {events.map((ev) => (
-        <li key={ev.id} className="flex flex-wrap items-start gap-3 text-sm">
-          <Badge variant={eventVariant[ev.type]}>{eventLabel[ev.type]}</Badge>
-          <span className="text-text-muted">{formatTimestamp(ev.occurredAt)}</span>
-          {ev.actor && (
-            <span className="text-text-muted">by {ev.actor}</span>
+      {events.map((event) => (
+        <li key={event.id} className="flex flex-wrap items-start gap-3 text-sm">
+          <Badge variant={eventVariant[event.type]}>{eventLabel[event.type]}</Badge>
+          <span className="text-text-muted">{formatTimestamp(event.occurredAt)}</span>
+          {event.actor && <span className="text-text-muted">by {event.actor}</span>}
+          {event.bounceRatePct !== null && (
+            <span className="text-warning">bounce {event.bounceRatePct.toFixed(2)}%</span>
           )}
-          {ev.bounceRatePct !== null && (
-            <span className="text-warning">bounce {ev.bounceRatePct.toFixed(2)}%</span>
-          )}
-          {ev.complaintRatePct !== null && (
+          {event.complaintRatePct !== null && (
             <span className="text-warning">
-              complaint {ev.complaintRatePct.toFixed(3)}%
+              complaint {event.complaintRatePct.toFixed(3)}%
             </span>
           )}
-          {ev.justification && (
+          {event.justification && (
             <span className="text-text-muted italic">
-              &ldquo;{ev.justification}&rdquo;
+              &ldquo;{event.justification}&rdquo;
             </span>
           )}
         </li>

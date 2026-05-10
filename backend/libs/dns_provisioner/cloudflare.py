@@ -10,6 +10,7 @@ from libs.core.config import Settings
 from libs.core.errors import ExternalServiceError, ValidationError
 from libs.dns_provisioner.base import (
     AuthenticationError,
+    AwsSecretsManagerSecretProvider,
     DNSProvisioner,
     DNSRecordInput,
     DNSZone,
@@ -90,11 +91,11 @@ class CloudflareDNSProvisioner(DNSProvisioner):
         self,
         settings: Settings,
         *,
-        secret_provider: SecretProvider,
+        secret_provider: SecretProvider | None = None,
         transport: CloudflareTransport | None = None,
     ) -> None:
         self._settings = settings
-        self._secret_provider = secret_provider
+        self._secret_provider = secret_provider or AwsSecretsManagerSecretProvider(settings)
         self._transport = transport or _UrllibCloudflareTransport(settings.cloudflare_api_base_url)
         self._token: str | None = None
 

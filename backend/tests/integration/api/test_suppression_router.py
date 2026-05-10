@@ -70,10 +70,21 @@ async def test_suppression_router_crud_list_and_bulk_import(
     assert get_response.status_code == 200
     assert get_response.json()["id"] == created["id"]
 
+    reveal_response = await auth_client.get(f"/suppression/{created['id']}/reveal")
+    assert reveal_response.status_code == 200
+    reveal_payload = reveal_response.json()
+    assert reveal_payload["id"] == created["id"]
+    assert reveal_payload["email"] == "router-one@dispatch.test"
+
     list_response = await auth_client.get("/suppression?limit=50&offset=0&reason_code=manual")
     assert list_response.status_code == 200
     assert list_response.json()["total"] >= 1
     assert any(item["id"] == created["id"] for item in list_response.json()["items"])
+
+    export_response = await auth_client.post("/suppression/export")
+    assert export_response.status_code == 200
+    assert export_response.headers["content-type"].startswith("text/csv")
+    assert "router-one@dispatch.test" in export_response.text
 
     bulk_response = await auth_client.post(
         "/suppression/bulk-import",

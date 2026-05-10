@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -15,12 +15,31 @@ import {
 } from "@/components/ui/dialog";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
-import { senderProfiles } from "@/app/(dashboard)/sender-profiles/_lib/sender-profiles-queries";
-import { mockTemplates, getVersionsForTemplate } from "@/app/(dashboard)/templates/_lib/templates-queries";
-import { mockSegments } from "@/app/(dashboard)/segments/_lib/segments-queries";
-import { lists } from "@/app/(dashboard)/lists/_lib/lists-queries";
-import { getMockPreflightChecks } from "@/app/(dashboard)/campaigns/_lib/campaigns-queries";
-import type { CampaignDraft, CampaignRecord, PreflightSeverity } from "@/types/campaign";
+import type {
+  CampaignDraft,
+  PreflightCheck,
+  PreflightSeverity,
+} from "@/types/campaign";
+import type { SenderProfile } from "@/types/domain";
+import type { List } from "@/types/list";
+import type { Segment } from "@/types/segment";
+import type { WizardTemplate } from "../_lib/wizard-types";
+
+type CampaignMutationResponse = {
+  id: string;
+};
+
+type CampaignPreflightApiResponse = {
+  campaign_id: string;
+  checks: Array<{
+    id: string;
+    label: string;
+    severity: string;
+    detail: string;
+  }>;
+  has_critical: boolean;
+  generated_at: string;
+};
 
 const severityVariant: Record<PreflightSeverity, "success" | "warning" | "danger"> = {
   ok: "success",
@@ -34,63 +53,193 @@ const severityLabel: Record<PreflightSeverity, string> = {
   critical: "Critical",
 };
 
+function toSeverity(value: string): PreflightSeverity {
+  if (value === "ok") return "ok";
+  if (value === "warning") return "warning";
+  if (value === "critical") return "critical";
+  return "warning";
+}
+
+function toPreflightCheck(item: CampaignPreflightApiResponse["checks"][number]): PreflightCheck {
+  return {
+    id: item.id,
+    label: item.label,
+    severity: toSeverity(item.severity),
+    detail: item.detail,
+  };
+}
+
+function resolveScheduledAt(draft: CampaignDraft): string | null {
+  if (draft.scheduleType !== "scheduled") return null;
+  const value = draft.scheduledAt.trim();
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function buildCampaignPayload(draft: CampaignDraft) {
+  return {
+    name: draft.name.trim(),
+    campaignType: "outreach",
+    senderProfileId: draft.senderProfileId,
+    templateId: draft.templateId,
+    templateVersion: draft.templateVersion,
+    audienceType: draft.audienceType,
+    audienceId: draft.audienceId,
+    scheduleType: draft.scheduleType,
+    scheduledAt: resolveScheduledAt(draft),
+    timezone: draft.timezone,
+    sendRatePerHour: 100,
+    trackingOpens: false,
+    trackingClicks: false,
+  };
+}
+
 type StepReviewProps = {
   draft: CampaignDraft;
+  senderProfiles: SenderProfile[];
+  templates: WizardTemplate[];
+  segments: Segment[];
+  lists: List[];
+  onChange: (patch: Partial<CampaignDraft>) => void;
   onBack: () => void;
   onGoToStep: (step: number) => void;
   onLaunchSuccess: () => void;
 };
 
-export function StepReview({ draft, onBack, onGoToStep, onLaunchSuccess }: StepReviewProps) {
+export function StepReview({
+  draft,
+  senderProfiles,
+  templates,
+  segments,
+  lists,
+  onChange,
+  onBack,
+  onGoToStep,
+  onLaunchSuccess,
+}: StepReviewProps) {
   const router = useRouter();
   const [launchOpen, setLaunchOpen] = useState(false);
   const [confirmName, setConfirmName] = useState("");
   const [isLaunching, setIsLaunching] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [isRunningPreflight, setIsRunningPreflight] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[]>([]);
 
   const sender = senderProfiles.find((sp) => sp.id === draft.senderProfileId);
-  const template = mockTemplates.find((t) => t.id === draft.templateId);
-  const versions = draft.templateId ? getVersionsForTemplate(draft.templateId) : [];
-  const templateVersion = versions.find((v) => v.version === draft.templateVersion);
+  const template = templates.find((t) => t.id === draft.templateId);
+  const templateVersion = template?.versions.find(
+    (v) => v.version === draft.templateVersion,
+  );
 
   const audience =
     draft.audienceType === "segment"
-      ? mockSegments.find((s) => s.id === draft.audienceId)
+      ? segments.find((s) => s.id === draft.audienceId)
       : lists.find((l) => l.id === draft.audienceId);
 
   const audienceCount =
     draft.audienceType === "segment"
-      ? (mockSegments.find((s) => s.id === draft.audienceId)?.lastComputedCount ?? 0)
+      ? (segments.find((s) => s.id === draft.audienceId)?.lastComputedCount ?? 0)
       : (lists.find((l) => l.id === draft.audienceId)?.memberCount ?? 0);
 
-  const preflightChecks = getMockPreflightChecks(audienceCount);
-  const hasCritical = preflightChecks.some((c) => c.severity === "critical");
-  const canLaunch = !hasCritical;
+  const canPrepareCampaign = useMemo(() => {
+    if (!draft.name.trim()) return false;
+    if (!draft.senderProfileId || !draft.templateId || draft.templateVersion === null) return false;
+    if (!draft.audienceId) return false;
+    if (draft.scheduleType === "scheduled" && !resolveScheduledAt(draft)) return false;
+    return true;
+  }, [draft]);
+
+  const preflightKey = useMemo(
+    () =>
+      JSON.stringify({
+        name: draft.name.trim(),
+        senderProfileId: draft.senderProfileId,
+        templateId: draft.templateId,
+        templateVersion: draft.templateVersion,
+        audienceType: draft.audienceType,
+        audienceId: draft.audienceId,
+        scheduleType: draft.scheduleType,
+        scheduledAt: resolveScheduledAt(draft),
+        timezone: draft.timezone,
+      }),
+    [draft],
+  );
+
+  async function upsertCampaign(): Promise<string> {
+    const payload = buildCampaignPayload(draft);
+    if (draft.campaignId) {
+      const updated = await clientJson<CampaignMutationResponse>(
+        apiEndpoints.campaigns.update(draft.campaignId),
+        {
+          method: "PATCH",
+          body: payload,
+        },
+      );
+      return updated.id;
+    }
+
+    const created = await clientJson<CampaignMutationResponse>(apiEndpoints.campaigns.create, {
+      method: "POST",
+      body: payload,
+    });
+    onChange({ campaignId: created.id });
+    return created.id;
+  }
+
+  async function runPreflight() {
+    if (!canPrepareCampaign) return;
+    setIsPreparing(true);
+    setPreflightError(null);
+    try {
+      const campaignId = await upsertCampaign();
+      setIsRunningPreflight(true);
+      const response = await clientJson<CampaignPreflightApiResponse>(
+        apiEndpoints.campaigns.preflight(campaignId),
+        { method: "POST" },
+      );
+      setPreflightChecks(response.checks.map(toPreflightCheck));
+    } catch {
+      setPreflightChecks([]);
+      setPreflightError("Could not run pre-launch checks. Review your inputs and retry.");
+    } finally {
+      setIsPreparing(false);
+      setIsRunningPreflight(false);
+    }
+  }
+
+  useEffect(() => {
+    let isCancelled = false;
+    async function run() {
+      if (isCancelled || !canPrepareCampaign) return;
+      await runPreflight();
+    }
+    void run();
+    return () => {
+      isCancelled = true;
+    };
+  }, [preflightKey, canPrepareCampaign]);
+
+  const hasCritical = preflightChecks.some((check) => check.severity === "critical");
+  const canLaunch =
+    canPrepareCampaign &&
+    preflightChecks.length > 0 &&
+    !hasCritical &&
+    !isPreparing &&
+    !isRunningPreflight &&
+    !isLaunching;
 
   async function handleLaunch() {
     if (confirmName !== draft.name || isLaunching) return;
     setIsLaunching(true);
     try {
-      const campaign = await clientJson<CampaignRecord>(
-        apiEndpoints.campaigns.create,
-        {
-          method: "POST",
-          body: {
-            name: draft.name,
-            tag: draft.tag || null,
-            senderProfileId: draft.senderProfileId,
-            templateId: draft.templateId,
-            templateVersion: draft.templateVersion,
-            audienceType: draft.audienceType,
-            audienceId: draft.audienceId,
-            scheduleType: draft.scheduleType,
-            scheduledAt: draft.scheduledAt || null,
-            timezone: draft.timezone,
-          },
-        },
-      );
+      const campaignId = await upsertCampaign();
+      await clientJson(apiEndpoints.campaigns.launch(campaignId), { method: "POST" });
       onLaunchSuccess();
       toast.success(`"${draft.name}" launched successfully.`);
-      router.push(`/campaigns/${campaign.id}`);
+      router.push(`/campaigns/${campaignId}`);
     } catch {
       toast.error("Launch failed. Please retry or contact support.");
     } finally {
@@ -101,7 +250,6 @@ export function StepReview({ draft, onBack, onGoToStep, onLaunchSuccess }: StepR
 
   return (
     <div className="grid gap-6">
-      {/* Summary */}
       <div className="surface-panel p-6 grid gap-5">
         <div className="flex items-center justify-between gap-3">
           <h2 className="section-title">Review</h2>
@@ -160,9 +308,7 @@ export function StepReview({ draft, onBack, onGoToStep, onLaunchSuccess }: StepR
           {templateVersion ? (
             <div className="summary-row">
               <dt className="text-sm font-medium">Subject</dt>
-              <dd className="text-sm text-text-muted italic">
-                {templateVersion.subject}
-              </dd>
+              <dd className="text-sm text-text-muted italic">{templateVersion.subject}</dd>
             </div>
           ) : null}
           <div className="summary-row">
@@ -201,25 +347,47 @@ export function StepReview({ draft, onBack, onGoToStep, onLaunchSuccess }: StepR
         </dl>
       </div>
 
-      {/* Pre-flight checks */}
       <div className="surface-panel p-6 grid gap-4">
-        <h2 className="section-title">Pre-launch checks</h2>
-        <ul role="list" className="grid gap-3">
-          {preflightChecks.map((check) => (
-            <li
-              key={check.id}
-              className="flex items-start justify-between gap-3"
-            >
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{check.label}</p>
-                <p className="text-xs text-text-muted mt-0.5">{check.detail}</p>
-              </div>
-              <Badge variant={severityVariant[check.severity]}>
-                {severityLabel[check.severity]}
-              </Badge>
-            </li>
-          ))}
-        </ul>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="section-title">Pre-launch checks</h2>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={isPreparing || isRunningPreflight || !canPrepareCampaign}
+            onClick={() => void runPreflight()}
+          >
+            {isRunningPreflight || isPreparing ? "Running…" : "Re-run checks"}
+          </Button>
+        </div>
+
+        {preflightError ? (
+          <p role="alert" className="text-sm text-danger">
+            {preflightError}
+          </p>
+        ) : null}
+
+        {preflightChecks.length > 0 ? (
+          <ul role="list" className="grid gap-3">
+            {preflightChecks.map((check) => (
+              <li key={check.id} className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium">{check.label}</p>
+                  <p className="text-xs text-text-muted mt-0.5">{check.detail}</p>
+                </div>
+                <Badge variant={severityVariant[check.severity]}>
+                  {severityLabel[check.severity]}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-text-muted">
+            {isRunningPreflight || isPreparing
+              ? "Running pre-launch checks…"
+              : "No pre-launch checks yet."}
+          </p>
+        )}
 
         {hasCritical ? (
           <p role="alert" className="text-sm text-danger">
@@ -244,7 +412,6 @@ export function StepReview({ draft, onBack, onGoToStep, onLaunchSuccess }: StepR
         </Button>
       </div>
 
-      {/* Launch confirm dialog */}
       <Dialog
         open={launchOpen}
         onOpenChange={(open) => {

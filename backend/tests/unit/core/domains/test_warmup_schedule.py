@@ -21,9 +21,13 @@ class TestWarmupSchedule:
         schedule = default_warmup_schedule()
         assert schedule.budget_for_day(1) == 50
 
-    def test_default_schedule_day10_is_70000(self) -> None:
+    def test_default_schedule_day10_is_500(self) -> None:
         schedule = default_warmup_schedule()
-        assert schedule.budget_for_day(10) == 70_000
+        assert schedule.budget_for_day(10) == 500
+
+    def test_default_schedule_day23_is_5000(self) -> None:
+        schedule = default_warmup_schedule()
+        assert schedule.budget_for_day(23) == 5_000
 
     def test_day_beyond_schedule_returns_last_volume(self) -> None:
         schedule = default_warmup_schedule()

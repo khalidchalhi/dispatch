@@ -22,11 +22,27 @@ logger = get_logger("core.circuit_breaker")
 _ACCOUNT_SCOPE_ID = "00000000-0000-0000-0000-000000000000"
 _KNOWN_STATES = {"closed", "open", "half_open"}
 
-_THRESHOLDS: dict[str, tuple[Decimal, Decimal]] = {
-    "domain": (Decimal("0.0150"), Decimal("0.0005")),
-    "ip_pool": (Decimal("0.0150"), Decimal("0.0005")),
-    "sender_profile": (Decimal("0.0200"), Decimal("0.0005")),
-    "account": (Decimal("0.0100"), Decimal("0.0003")),
+@dataclass(frozen=True, slots=True)
+class ScopeThreshold:
+    bounce_rate: Decimal
+    complaint_rate: Decimal | None = None
+
+
+_THRESHOLDS: dict[str, ScopeThreshold] = {
+    "domain": ScopeThreshold(
+        bounce_rate=Decimal("0.0150"),
+        complaint_rate=Decimal("0.0005"),
+    ),
+    "ip_pool": ScopeThreshold(
+        bounce_rate=Decimal("0.0150"),
+        complaint_rate=Decimal("0.0005"),
+    ),
+    "sender_profile": ScopeThreshold(
+        bounce_rate=Decimal("0.0200"),
+    ),
+    "account": ScopeThreshold(
+        bounce_rate=Decimal("0.0100"),
+    ),
 }
 
 
@@ -55,6 +71,23 @@ class CircuitBreakerTripParams:
     complaint_rate_24h: Decimal | None
 
 
+@dataclass(frozen=True, slots=True)
+class CircuitBreakerStatus:
+    id: str
+    scope_type: str
+    scope_id: str
+    entity_name: str
+    state: str
+    tripped_at: datetime | None
+    tripped_reason: str | None
+    bounce_rate_24h: Decimal | None
+    complaint_rate_24h: Decimal | None
+    auto_reset_at: datetime | None
+    reset_by: str | None
+    reset_at: datetime | None
+    updated_at: datetime
+
+
 class CircuitBreakerService:
     def __init__(
         self,
@@ -64,7 +97,7 @@ class CircuitBreakerService:
     ) -> None:
         self._settings = settings
         self._session_factory = get_session_factory()
-        self._cache_ttl_seconds = max(settings.circuit_breaker_cache_ttl_seconds, 1)
+        self._cache_ttl_seconds = 10
         self._auto_reset_after = timedelta(hours=max(settings.circuit_breaker_auto_reset_hours, 1))
         self._recheck_delay_seconds = max(settings.circuit_breaker_recheck_delay_seconds, 1)
         self._trip_consecutive_evaluations = max(
@@ -113,6 +146,78 @@ class CircuitBreakerService:
             if await self.is_open(scope_type=scope_type, scope_id=normalized_scope_id):
                 return scope_type, normalized_scope_id
         return None
+
+    async def list_breakers(self) -> list[CircuitBreakerStatus]:
+        statuses: list[CircuitBreakerStatus] = []
+        async with self._session_factory() as session:
+            repo = CircuitBreakerRepository(session)
+            state_rows = await repo.list_states()
+            state_by_scope_key = {
+                self._scope_key(scope_type=row.scope_type, scope_id=row.scope_id): row
+                for row in state_rows
+            }
+
+            for scope_type in _THRESHOLDS:
+                entities = await repo.list_scope_entities(scope_type=scope_type)
+                for scope_id, entity_name in entities:
+                    key = self._scope_key(scope_type=scope_type, scope_id=scope_id)
+                    state_row = state_by_scope_key.get(key)
+                    statuses.append(
+                        self._to_status(
+                            scope_type=scope_type,
+                            scope_id=scope_id,
+                            entity_name=entity_name,
+                            state=state_row,
+                        )
+                    )
+
+        statuses.sort(key=lambda item: (item.scope_type, item.entity_name, item.scope_id))
+        return statuses
+
+    async def get_breaker_status_by_scope(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+    ) -> CircuitBreakerStatus:
+        normalized_scope_id = str(scope_id).strip()
+        if scope_type not in _THRESHOLDS:
+            raise ValidationError("Unknown circuit breaker scope type")
+        if not normalized_scope_id:
+            raise ValidationError("scope_id is required")
+
+        async with self._session_factory() as session:
+            repo = CircuitBreakerRepository(session)
+            state = await repo.get_state(scope_type=scope_type, scope_id=normalized_scope_id)
+            entity_name = await self._resolve_entity_name(
+                repo=repo,
+                scope_type=scope_type,
+                scope_id=normalized_scope_id,
+            )
+        return self._to_status(
+            scope_type=scope_type,
+            scope_id=normalized_scope_id,
+            entity_name=entity_name,
+            state=state,
+        )
+
+    async def get_breaker_status_by_id(self, breaker_id: str) -> CircuitBreakerStatus:
+        scope_type, scope_id = self.parse_breaker_id(breaker_id)
+        return await self.get_breaker_status_by_scope(scope_type=scope_type, scope_id=scope_id)
+
+    @staticmethod
+    def parse_breaker_id(breaker_id: str) -> tuple[str, str]:
+        raw = breaker_id.strip()
+        parts = raw.split(":", 1)
+        if len(parts) != 2:
+            raise ValidationError("breaker_id must be '<scope_type>:<scope_id>'")
+        scope_type = parts[0].strip()
+        scope_id = parts[1].strip()
+        if scope_type not in _THRESHOLDS:
+            raise ValidationError("Unknown circuit breaker scope type")
+        if not scope_id:
+            raise ValidationError("scope_id is required")
+        return scope_type, scope_id
 
     async def trip(
         self,
@@ -168,7 +273,8 @@ class CircuitBreakerService:
                 tripped_reason=f"manual_reset:{clean_reason}",
                 tripped_at=None,
                 auto_reset_at=None,
-                manually_reset_by=actor_user_id,
+                reset_by=actor_user_id,
+                reset_at=datetime.now(UTC),
             )
             await auth_repo.write_audit_log(
                 actor_type="user",
@@ -232,7 +338,8 @@ class CircuitBreakerService:
                             tripped_reason=None,
                             tripped_at=None,
                             auto_reset_at=None,
-                            manually_reset_by=None,
+                            reset_by=None,
+                            reset_at=None,
                         )
 
                     if state.state not in _KNOWN_STATES:
@@ -273,7 +380,8 @@ class CircuitBreakerService:
                                 tripped_reason="auto_transition_half_open",
                                 tripped_at=state.tripped_at,
                                 auto_reset_at=state.auto_reset_at,
-                                manually_reset_by=None,
+                                reset_by=state.reset_by,
+                                reset_at=state.reset_at,
                             )
                             moved_to_half_open += 1
                             touched_scope_keys.add((scope_type, scope_id))
@@ -287,7 +395,8 @@ class CircuitBreakerService:
                                 tripped_reason=state.tripped_reason,
                                 tripped_at=state.tripped_at,
                                 auto_reset_at=state.auto_reset_at,
-                                manually_reset_by=None,
+                                reset_by=state.reset_by,
+                                reset_at=state.reset_at,
                             )
                         continue
 
@@ -318,7 +427,8 @@ class CircuitBreakerService:
                                 tripped_reason="auto_recovered",
                                 tripped_at=None,
                                 auto_reset_at=None,
-                                manually_reset_by=None,
+                                reset_by=state.reset_by,
+                                reset_at=datetime.now(UTC),
                             )
                             await auth_repo.write_audit_log(
                                 actor_type="system",
@@ -364,7 +474,8 @@ class CircuitBreakerService:
                             tripped_reason=None,
                             tripped_at=None,
                             auto_reset_at=None,
-                            manually_reset_by=None,
+                            reset_by=None,
+                            reset_at=None,
                         )
 
         for scope_type, scope_id in touched_scope_keys:
@@ -493,14 +604,17 @@ class CircuitBreakerService:
             tripped_reason=params.reason_code,
             tripped_at=now,
             auto_reset_at=now + self._auto_reset_after,
-            manually_reset_by=None,
+            reset_by=None,
+            reset_at=None,
         )
 
-        threshold_bounce, threshold_complaint = _THRESHOLDS[params.scope_type]
+        threshold = _THRESHOLDS[params.scope_type]
+        threshold_bounce = threshold.bounce_rate
+        threshold_complaint = threshold.complaint_rate
         breach_metric = (
-            "bounce_rate_24h"
-            if (params.bounce_rate_24h or Decimal("0")) >= threshold_bounce
-            else "complaint_rate_24h"
+            "complaint_rate_24h"
+            if "complaint" in params.reason_code
+            else "bounce_rate_24h"
         )
         observed_value = (
             params.bounce_rate_24h
@@ -509,7 +623,7 @@ class CircuitBreakerService:
         )
         expected_value = (
             threshold_bounce
-            if breach_metric == "bounce_rate_24h"
+            if breach_metric == "bounce_rate_24h" or threshold_complaint is None
             else threshold_complaint
         )
         severity = "critical" if params.scope_type == "account" else "warning"
@@ -552,6 +666,63 @@ class CircuitBreakerService:
             )
         return state
 
+    async def _resolve_entity_name(
+        self,
+        *,
+        repo: CircuitBreakerRepository,
+        scope_type: str,
+        scope_id: str,
+    ) -> str:
+        if scope_type == "account":
+            return "Platform account"
+        entities = await repo.list_scope_entities(scope_type=scope_type)
+        for entity_id, entity_name in entities:
+            if entity_id == scope_id:
+                return entity_name
+        return scope_id
+
+    def _to_status(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        entity_name: str,
+        state: CircuitBreakerState | None,
+    ) -> CircuitBreakerStatus:
+        if state is None:
+            now = datetime.now(UTC)
+            return CircuitBreakerStatus(
+                id=self._scope_key(scope_type=scope_type, scope_id=scope_id),
+                scope_type=scope_type,
+                scope_id=scope_id,
+                entity_name=entity_name,
+                state="closed",
+                tripped_at=None,
+                tripped_reason=None,
+                bounce_rate_24h=None,
+                complaint_rate_24h=None,
+                auto_reset_at=None,
+                reset_by=None,
+                reset_at=None,
+                updated_at=now,
+            )
+
+        return CircuitBreakerStatus(
+            id=self._scope_key(scope_type=scope_type, scope_id=scope_id),
+            scope_type=state.scope_type,
+            scope_id=state.scope_id,
+            entity_name=entity_name,
+            state=state.state,
+            tripped_at=state.tripped_at,
+            tripped_reason=state.tripped_reason,
+            bounce_rate_24h=state.bounce_rate_24h,
+            complaint_rate_24h=state.complaint_rate_24h,
+            auto_reset_at=state.auto_reset_at,
+            reset_by=state.reset_by,
+            reset_at=state.reset_at,
+            updated_at=state.updated_at,
+        )
+
     @staticmethod
     def _serialize_state(state: CircuitBreakerState | None) -> dict[str, object] | None:
         if state is None:
@@ -572,7 +743,8 @@ class CircuitBreakerService:
             "auto_reset_at": (
                 state.auto_reset_at.isoformat() if state.auto_reset_at is not None else None
             ),
-            "manually_reset_by": state.manually_reset_by,
+            "reset_by": state.reset_by,
+            "reset_at": state.reset_at.isoformat() if state.reset_at is not None else None,
         }
 
     @staticmethod
@@ -582,10 +754,16 @@ class CircuitBreakerService:
         bounce_rate_24h: Decimal | None,
         complaint_rate_24h: Decimal | None,
     ) -> tuple[bool, str | None]:
-        threshold_bounce, threshold_complaint = _THRESHOLDS[scope_type]
+        threshold = _THRESHOLDS[scope_type]
+        threshold_bounce = threshold.bounce_rate
+        threshold_complaint = threshold.complaint_rate
         if bounce_rate_24h is not None and bounce_rate_24h >= threshold_bounce:
             return True, "bounce_threshold"
-        if complaint_rate_24h is not None and complaint_rate_24h >= threshold_complaint:
+        if (
+            threshold_complaint is not None
+            and complaint_rate_24h is not None
+            and complaint_rate_24h >= threshold_complaint
+        ):
             return True, "complaint_threshold"
         return False, None
 

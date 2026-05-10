@@ -1,8 +1,13 @@
 import { PageIntro } from "@/components/patterns/page-intro";
-import { lists } from "./_lib/lists-queries";
+import { serverJson } from "@/lib/api/server";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
 import { ListsManager } from "./_components/lists-manager";
+import { toList, type ApiListCollectionResponse } from "./_lib/lists-api";
 
-export default function ListsPage() {
+export default async function ListsPage() {
+  const response = await serverJson<ApiListCollectionResponse>(ENDPOINTS.lists.list);
+  const lists = response.items.map(toList);
+
   return (
     <div className="page-stack">
       <PageIntro

@@ -39,11 +39,11 @@ export function SegmentWorkspace({ segment: initial }: SegmentWorkspaceProps) {
     setIsSaving(true);
     try {
       await clientJson<Segment>(apiEndpoints.segments.update(initial.id), {
-        method: "PUT",
+        method: "PATCH",
         body: {
           name: name.trim(),
           description: description.trim() || null,
-          dslJson: dsl,
+          dsl_json: dsl,
         },
       });
       setHasUnsaved(false);

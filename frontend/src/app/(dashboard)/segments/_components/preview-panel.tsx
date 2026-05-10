@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
-import type { SegmentDsl, SegmentPreview } from "@/types/segment";
+import type { SegmentDsl } from "@/types/segment";
+import type { ApiSegmentEvaluateResponse } from "../_lib/segments-api";
 
 const DEBOUNCE_MS = 600;
 
@@ -14,7 +15,7 @@ type PreviewPanelProps = {
 };
 
 export function PreviewPanel({ segmentId, dsl, isValid }: PreviewPanelProps) {
-  const [preview, setPreview] = useState<SegmentPreview | null>(null);
+  const [preview, setPreview] = useState<ApiSegmentEvaluateResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -30,11 +31,10 @@ export function PreviewPanel({ segmentId, dsl, isValid }: PreviewPanelProps) {
       setLoading(true);
       setError(false);
       try {
-        const result = await clientJson<SegmentPreview>(
-          apiEndpoints.segments.preview(segmentId),
+        const result = await clientJson<ApiSegmentEvaluateResponse>(
+          apiEndpoints.segments.evaluate(segmentId),
           {
             method: "POST",
-            body: { dsl },
             signal: controller.signal,
           },
         );
@@ -101,37 +101,11 @@ export function PreviewPanel({ segmentId, dsl, isValid }: PreviewPanelProps) {
         <>
           <div className="surface-panel-muted rounded-lg p-4 text-center">
             <p className="text-3xl font-bold tabular-nums">
-              {preview.count.toLocaleString()}
+              {preview.total_count.toLocaleString()}
             </p>
             <p className="mt-1 text-sm text-text-muted">
               contacts match this segment
             </p>
-          </div>
-
-          <div>
-            <h3 className="text-xs font-medium text-text-muted uppercase tracking-wide mb-2">
-              Exclusion breakdown
-            </h3>
-            <dl className="grid grid-cols-3 gap-3">
-              <div className="surface-panel-muted rounded-lg p-3 text-center">
-                <dd className="text-lg font-semibold text-danger">
-                  {preview.exclusions.suppressed.toLocaleString()}
-                </dd>
-                <dt className="text-xs text-text-muted">Suppressed</dt>
-              </div>
-              <div className="surface-panel-muted rounded-lg p-3 text-center">
-                <dd className="text-lg font-semibold text-warning">
-                  {preview.exclusions.unsubscribed.toLocaleString()}
-                </dd>
-                <dt className="text-xs text-text-muted">Unsubscribed</dt>
-              </div>
-              <div className="surface-panel-muted rounded-lg p-3 text-center">
-                <dd className="text-lg font-semibold text-text-muted">
-                  {preview.exclusions.bounced.toLocaleString()}
-                </dd>
-                <dt className="text-xs text-text-muted">Bounced</dt>
-              </div>
-            </dl>
           </div>
 
           {preview.sample.length > 0 ? (
@@ -149,7 +123,7 @@ export function PreviewPanel({ segmentId, dsl, isValid }: PreviewPanelProps) {
                       {contact.email}
                     </span>
                     <span className="text-xs text-text-muted shrink-0">
-                      {contact.lifecycle}
+                      {contact.lifecycle_status}
                     </span>
                   </li>
                 ))}
@@ -167,3 +141,4 @@ export function PreviewPanel({ segmentId, dsl, isValid }: PreviewPanelProps) {
     </div>
   );
 }
+

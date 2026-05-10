@@ -70,6 +70,11 @@ async def test_templates_router_full_flow(
         "contact.first_name",
         "contact.preferences.plan",
     ]
+    merge_tags_response = await auth_client.get("/templates/merge-tags")
+    assert merge_tags_response.status_code == 200
+    merge_tags_payload = merge_tags_response.json()
+    assert any(item["tag"] == "{{contact.first_name}}" for item in merge_tags_payload)
+    assert any(item["tag"] == "{{contact.unsubscribe_url}}" for item in merge_tags_payload)
 
     version_response = await auth_client.post(
         f"/templates/{template_id}/versions",
@@ -86,12 +91,20 @@ async def test_templates_router_full_flow(
     assert len(version_payload["versions"]) == 2
     assert version_payload["versions"][1]["is_published"] is True
     assert version_payload["versions"][0]["is_published"] is False
+    publish_response = await auth_client.post(
+        f"/templates/{template_id}/versions/1/publish",
+    )
+    assert publish_response.status_code == 200
+    publish_payload = publish_response.json()
+    assert publish_payload["head_version_number"] == 1
+    assert publish_payload["versions"][0]["is_published"] is True
+    assert publish_payload["versions"][1]["is_published"] is False
 
     list_response = await auth_client.get("/templates")
     assert list_response.status_code == 200
     list_items = list_response.json()["items"]
     assert any(
-        item["id"] == template_id and item["head_version_number"] == 2
+        item["id"] == template_id and item["head_version_number"] == 1
         for item in list_items
     )
 

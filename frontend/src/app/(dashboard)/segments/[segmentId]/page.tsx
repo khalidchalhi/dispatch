@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { serverJson } from "@/lib/api/server";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
+import { ApiError } from "@/lib/api/errors";
 import { SegmentWorkspace } from "../_components/segment-workspace";
-import { getSegmentById } from "../_lib/segments-queries";
+import { toSegment, type ApiSegmentResponse } from "../_lib/segments-api";
 
 type SegmentDetailPageProps = {
   params: Promise<{ segmentId: string }>;
@@ -11,9 +14,19 @@ export default async function SegmentDetailPage({
   params,
 }: SegmentDetailPageProps) {
   const { segmentId } = await params;
+  let segmentResponse: ApiSegmentResponse;
+  try {
+    segmentResponse = await serverJson<ApiSegmentResponse>(
+      ENDPOINTS.segments.byId(segmentId),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      notFound();
+    }
+    throw error;
+  }
 
-  const segment = getSegmentById(segmentId);
-  if (!segment) notFound();
+  const segment = toSegment(segmentResponse);
 
   return (
     <div className="page-stack">

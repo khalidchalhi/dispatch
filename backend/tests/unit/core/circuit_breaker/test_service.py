@@ -33,6 +33,24 @@ class _FailingRedisClient:
         raise RuntimeError("redis unavailable")
 
 
+class _RecordingRedisClient:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.setex_calls: list[tuple[str, int, str]] = []
+
+    async def get(self, key: str) -> object:
+        return self.store.get(key)
+
+    async def setex(self, key: str, ttl: int, value: str) -> object:
+        self.store[key] = value
+        self.setex_calls.append((key, ttl, value))
+        return "OK"
+
+    async def delete(self, key: str) -> object:
+        self.store.pop(key, None)
+        return 1
+
+
 async def _create_verified_domain(auth_test_context: AuthTestContext) -> str:
     unique = uuid4().hex[:8]
     async with UnitOfWork(auth_test_context.session_factory) as uow:
@@ -100,6 +118,29 @@ async def test_is_open_fail_closed_when_redis_errors(
 
 
 @pytest.mark.asyncio
+async def test_is_open_uses_10_second_cache_ttl(
+    auth_test_context: AuthTestContext,
+) -> None:
+    scope_id = await _create_verified_domain(auth_test_context)
+    redis_client = _RecordingRedisClient()
+    settings = auth_test_context.settings.model_copy(update={"app_env": "local"})
+    service = CircuitBreakerService(settings, redis_client=redis_client)
+
+    await service.trip(
+        scope_type="domain",
+        scope_id=scope_id,
+        reason_code="bounce_threshold",
+        bounce_rate_24h=Decimal("0.0200"),
+        complaint_rate_24h=Decimal("0.0000"),
+    )
+    is_open = await service.is_open(scope_type="domain", scope_id=scope_id)
+
+    assert is_open is True
+    assert len(redis_client.setex_calls) >= 1
+    assert redis_client.setex_calls[-1][1] == 10
+
+
+@pytest.mark.asyncio
 async def test_trip_and_reset_write_audit_and_alert(
     auth_test_context: AuthTestContext,
     auth_user_factory: UserFactory,
@@ -128,7 +169,7 @@ async def test_trip_and_reset_write_audit_and_alert(
         reason="investigation complete",
     )
     assert reset.state == "closed"
-    assert reset.manually_reset_by == admin.id
+    assert reset.reset_by == admin.id
 
     async with UnitOfWork(auth_test_context.session_factory) as uow:
         alerts = (

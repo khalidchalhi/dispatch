@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { CheckCircle2, AlertCircle } from "lucide-react";
@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
-import { getMockZones } from "@/app/(dashboard)/domains/_lib/provisioning-queries";
-import type { DomainListItem, ProvisioningProvider } from "@/types/domain";
+import { toDnsZones } from "@/app/(dashboard)/domains/_lib/provisioning-api";
+import type { DnsZone, DomainListItem, ProvisioningProvider } from "@/types/domain";
 
 const HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
 
@@ -61,11 +61,43 @@ export function ProvisioningWizard() {
   const [domainName, setDomainName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [zoneId, setZoneId] = useState<string | null>(null);
+  const [zones, setZones] = useState<DnsZone[]>([]);
+  const [isLoadingZones, setIsLoadingZones] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const steps = useMemo(() => getSteps(provider), [provider]);
   const currentStep = steps[stepIdx]!;
   const totalSteps = steps.length;
+
+  useEffect(() => {
+    if (!provider || provider === "manual") {
+      setZones([]);
+      setIsLoadingZones(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadZones() {
+      setIsLoadingZones(true);
+      try {
+        const response = await clientJson<unknown>(apiEndpoints.domains.zones(provider));
+        if (cancelled) return;
+        setZones(toDnsZones(response, provider));
+      } catch {
+        if (cancelled) return;
+        setZones([]);
+        toast.error("Could not load provider zones. Please retry.");
+      } finally {
+        if (!cancelled) setIsLoadingZones(false);
+      }
+    }
+
+    void loadZones();
+    return () => {
+      cancelled = true;
+    };
+  }, [provider]);
 
   function handleProviderSelect(p: ProvisioningProvider) {
     setProvider(p);
@@ -108,7 +140,13 @@ export function ProvisioningWizard() {
           method: "POST",
           body: {
             name: domainName.trim(),
-            ...(provider !== "manual" && { provider, zoneId }),
+            dns_provider: provider ?? "manual",
+            ...(provider === "cloudflare" && zoneId
+              ? { cloudflare_zone_id: zoneId }
+              : {}),
+            ...(provider === "route53" && zoneId
+              ? { route53_hosted_zone_id: zoneId }
+              : {}),
           },
         },
       );
@@ -129,8 +167,6 @@ export function ProvisioningWizard() {
     }
   }
 
-  const zones =
-    provider && provider !== "manual" ? getMockZones(provider) : [];
   const authStatus =
     provider && provider !== "manual" ? MOCK_AUTH[provider] : null;
 
@@ -262,7 +298,14 @@ export function ProvisioningWizard() {
         {currentStep === "zones" && (
           <section aria-label="Zone selection">
             <h2 className="section-title mb-4">Select DNS zone</h2>
-            <div className="grid gap-2" role="radiogroup" aria-label="DNS zone">
+            {isLoadingZones ? (
+              <p className="text-sm text-text-muted">Loading zones…</p>
+            ) : zones.length === 0 ? (
+              <p className="text-sm text-text-muted">
+                No zones returned for this provider.
+              </p>
+            ) : (
+              <div className="grid gap-2" role="radiogroup" aria-label="DNS zone">
               {zones.map((zone) => (
                 <label
                   key={zone.id}
@@ -284,7 +327,8 @@ export function ProvisioningWizard() {
                   </Badge>
                 </label>
               ))}
-            </div>
+              </div>
+            )}
           </section>
         )}
 

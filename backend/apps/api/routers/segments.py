@@ -116,7 +116,8 @@ async def delete_segment(
 
 
 @router.post("/{segment_id}/preview", response_model=SegmentPreviewResponse)
-async def preview_segment(
+@router.post("/{segment_id}/evaluate", response_model=SegmentPreviewResponse)
+async def evaluate_segment(
     segment_id: str,
     actor: Annotated[CurrentActor, Depends(get_current_actor)],
     _: Annotated[User, Depends(require_admin)],
@@ -126,4 +127,24 @@ async def preview_segment(
     return SegmentPreviewResponse(
         total_count=preview.total_count,
         sample=[SegmentContactSampleResponse.from_model(contact) for contact in preview.sample],
+    )
+
+
+@router.post("/{segment_id}/duplicate", response_model=SegmentResponse)
+async def duplicate_segment(
+    segment_id: str,
+    request: Request,
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    service: Annotated[SegmentService, Depends(get_segment_service_dep)],
+) -> SegmentResponse:
+    duplicated = await service.duplicate_segment(
+        actor=actor,
+        segment_id=segment_id,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return SegmentResponse.from_model(
+        duplicated.segment,
+        description=duplicated.description,
     )

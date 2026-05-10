@@ -5,9 +5,9 @@ import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
 import { formatTimestamp } from "@/lib/formatters";
 import type { ImportJob } from "@/types/import";
+import { toImportJob, type ApiImportJobResponse } from "../_lib/import-api";
 
-const POLL_INITIAL_MS = 2_000;
-const POLL_MAX_MS = 30_000;
+const POLL_INTERVAL_MS = 2_000;
 
 type ProgressStepProps = {
   jobId: string;
@@ -21,30 +21,28 @@ export function ProgressStep({ jobId, fileName, onComplete }: ProgressStepProps)
 
   useEffect(() => {
     let cancelled = false;
-    let delay = POLL_INITIAL_MS;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await clientJson<ImportJob>(
-          apiEndpoints.contacts.importJob(jobId),
+        const result = await clientJson<ApiImportJobResponse>(
+          apiEndpoints.contacts.importJobStatus(jobId),
         );
+        const mapped = toImportJob(result);
         if (!cancelled) {
-          setJob(result);
+          setJob(mapped);
           setPollError(false);
-          if (result.status === "completed" || result.status === "failed") {
-            onComplete(result);
+          if (mapped.status === "completed" || mapped.status === "failed") {
+            onComplete(mapped);
             return;
           }
-          delay = Math.min(delay * 2, POLL_MAX_MS);
-          timeoutId = setTimeout(() => void poll(), delay);
+          timeoutId = setTimeout(() => void poll(), POLL_INTERVAL_MS);
         }
       } catch {
         if (!cancelled) {
           setPollError(true);
-          delay = Math.min(delay * 2, POLL_MAX_MS);
-          timeoutId = setTimeout(() => void poll(), delay);
+          timeoutId = setTimeout(() => void poll(), POLL_INTERVAL_MS);
         }
       }
     }
@@ -130,7 +128,7 @@ export function ProgressStep({ jobId, fileName, onComplete }: ProgressStepProps)
 
       {pollError ? (
         <p className="text-sm text-text-muted">
-          Lost connection to the server. Retrying with backoff…
+          Lost connection to the server. Retrying in 2 seconds…
         </p>
       ) : null}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -18,7 +18,10 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
 import { formatTimestamp } from "@/lib/formatters";
-import { getMockProvisioningAttempt } from "@/app/(dashboard)/domains/_lib/provisioning-queries";
+import {
+  type DomainProvisioningStatusApiResponse,
+  toProvisioningAttemptFromStatus,
+} from "@/app/(dashboard)/domains/_lib/provisioning-api";
 import type {
   ProvisioningAttempt,
   ProvisioningStep,
@@ -118,26 +121,47 @@ export function StepLog({ initialAttempt, domainId }: StepLogProps) {
   const [attempt, setAttempt] = useState<ProvisioningAttempt>(initialAttempt);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const refreshAttempt = useCallback(async () => {
+    try {
+      const response = await clientJson<DomainProvisioningStatusApiResponse>(
+        apiEndpoints.domains.provisioningStatus(domainId),
+      );
+      setAttempt((previous) =>
+        toProvisioningAttemptFromStatus(
+          response,
+          {
+            id: previous.domainId,
+            name: previous.domainName,
+            dns_provider: previous.provider,
+          },
+          previous,
+        ),
+      );
+    } catch {
+      // Keep the last rendered state on transient errors.
+    }
+  }, [domainId]);
+
   useEffect(() => {
     if (attempt.status !== "in_progress") return;
 
     pollTimerRef.current = setInterval(() => {
-      const fresh = getMockProvisioningAttempt(domainId);
-      if (fresh) setAttempt(fresh);
+      void refreshAttempt();
     }, POLL_INTERVAL_MS);
 
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [attempt.status, domainId]);
+  }, [attempt.status, refreshAttempt]);
 
   async function handleRetry() {
     try {
       await clientJson(apiEndpoints.domains.provision(domainId), {
         method: "POST",
-        body: { retry: true },
+        body: { force: true },
       });
       toast.success("Provisioning re-enqueued.");
+      await refreshAttempt();
     } catch {
       toast.error("Retry failed. Please try again.");
     }

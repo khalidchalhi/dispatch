@@ -26,11 +26,12 @@ class CircuitBreakerState(Base):
     tripped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tripped_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     auto_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    manually_reset_by: Mapped[str | None] = mapped_column(
+    reset_by: Mapped[str | None] = mapped_column(
         Uuid(as_uuid=False),
         ForeignKey("users.id"),
         nullable=True,
     )
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

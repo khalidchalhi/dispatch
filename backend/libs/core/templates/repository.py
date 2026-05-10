@@ -140,3 +140,14 @@ class TemplateRepository:
         )
         result = await self.session.execute(stmt)
         return int(getattr(result, "rowcount", 0) or 0)
+
+    async def publish_version(self, *, template_id: str, version_number: int) -> bool:
+        stmt = (
+            update(TemplateVersion)
+            .where(TemplateVersion.template_id == template_id)
+            .where(TemplateVersion.version_number == version_number)
+            .values(is_published=True)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = await self.session.execute(stmt)
+        return bool(getattr(result, "rowcount", 0))

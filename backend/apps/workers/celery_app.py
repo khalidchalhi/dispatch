@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from apps.workers.queues import build_send_task_router
 from libs.core.config import get_settings
@@ -41,7 +42,7 @@ celery_app.conf.update(
         },
         "warmup-compute-daily-budgets": {
             "task": "warmup.compute_daily_budgets",
-            "schedule": 86400.0,
+            "schedule": crontab(minute=0, hour=0),
         },
         "warmup-check-graduation": {
             "task": "warmup.check_graduation",

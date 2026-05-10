@@ -1,9 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
-import { getDomainDetail } from "../../_lib/domains-queries";
-import { getMockProvisioningAttempt } from "../../_lib/provisioning-queries";
+import { serverJson } from "@/lib/api/server";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
+import { ApiError } from "@/lib/api/errors";
+import {
+  type DomainProvisioningStatusApiResponse,
+  toProvisioningAttemptFromStatus,
+} from "../../_lib/provisioning-api";
 import { StepLog } from "./_components/step-log";
+import type { ProvisioningAttempt } from "@/types/domain";
 
 const providerLabel: Record<string, string> = {
   manual: "Manual",
@@ -13,12 +19,47 @@ const providerLabel: Record<string, string> = {
 
 type Props = { params: Promise<{ domainId: string }> };
 
+type DomainDetailApiResponse = {
+  id: string;
+  name: string;
+  dns_provider?: string | null;
+};
+
 export default async function ProvisionPage({ params }: Props) {
   const { domainId } = await params;
-  const domain = getDomainDetail(domainId);
-  if (!domain) notFound();
 
-  const attempt = getMockProvisioningAttempt(domainId);
+  let domain: DomainDetailApiResponse;
+  try {
+    domain = await serverJson<DomainDetailApiResponse>(
+      ENDPOINTS.domains.detail(domainId),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      notFound();
+    }
+    throw error;
+  }
+
+  let attempt: ProvisioningAttempt | null = null;
+  try {
+    const status = await serverJson<DomainProvisioningStatusApiResponse>(
+      ENDPOINTS.domains.provisioningStatus(domainId),
+    );
+    const mapped = toProvisioningAttemptFromStatus(status, {
+      id: domain.id,
+      name: domain.name,
+      dns_provider: domain.dns_provider ?? null,
+    });
+
+    const noAttempt =
+      !status.run_id &&
+      !status.runId &&
+      (status.status === "not_started" || !status.status) &&
+      mapped.steps.length === 0;
+    attempt = noAttempt ? null : mapped;
+  } catch {
+    attempt = null;
+  }
 
   return (
     <div className="page-stack">

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ExternalLink, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -46,15 +47,30 @@ type ReputationTabProps = {
 };
 
 export function ReputationTab({ domainId, data }: ReputationTabProps) {
+  const router = useRouter();
   const [connecting, setConnecting] = useState(false);
 
   async function handleConnect() {
     setConnecting(true);
     try {
-      await clientJson(apiEndpoints.domains.postmasterConnect(domainId), {
+      const response = await clientJson<{
+        authorization_url?: string;
+        oauth_url?: string;
+        redirect_url?: string;
+      }>(apiEndpoints.domains.postmasterConnect(domainId), {
         method: "POST",
       });
-      toast.success("Postmaster connection initiated. Check your Google account.");
+
+      const oauthUrl =
+        response.authorization_url ?? response.oauth_url ?? response.redirect_url;
+
+      if (typeof oauthUrl === "string" && oauthUrl.length > 0) {
+        window.location.assign(oauthUrl);
+        return;
+      }
+
+      toast.success("Postmaster connection initiated.");
+      router.refresh();
     } catch {
       toast.error("Failed to initiate connection. Please try again.");
     } finally {

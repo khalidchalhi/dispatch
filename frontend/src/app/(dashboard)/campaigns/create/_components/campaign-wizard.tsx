@@ -10,13 +10,14 @@ import { StepSchedule } from "./step-schedule";
 import { StepReview } from "./step-review";
 import { EMPTY_DRAFT } from "@/types/campaign";
 import type { CampaignDraft } from "@/types/campaign";
+import type { WizardData } from "../_lib/wizard-types";
 
 const STORAGE_KEY = "dispatch:campaign-draft";
 
 function loadDraft(): CampaignDraft {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as CampaignDraft;
+    if (raw) return { ...EMPTY_DRAFT, ...(JSON.parse(raw) as Partial<CampaignDraft>) };
   } catch {
     // ignore
   }
@@ -39,7 +40,9 @@ function clearDraft() {
   }
 }
 
-export function CampaignWizard() {
+type CampaignWizardProps = WizardData;
+
+export function CampaignWizard({ senderProfiles, templates, segments, lists }: CampaignWizardProps) {
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<CampaignDraft>(() => loadDraft());
 
@@ -83,6 +86,7 @@ export function CampaignWizard() {
       {step === 1 && (
         <StepSender
           draft={draft}
+          senderProfiles={senderProfiles}
           onChange={handleChange}
           onBack={handleBack}
           onNext={handleNext}
@@ -91,6 +95,7 @@ export function CampaignWizard() {
       {step === 2 && (
         <StepTemplate
           draft={draft}
+          templates={templates}
           onChange={handleChange}
           onBack={handleBack}
           onNext={handleNext}
@@ -99,6 +104,8 @@ export function CampaignWizard() {
       {step === 3 && (
         <StepAudience
           draft={draft}
+          segments={segments}
+          lists={lists}
           onChange={handleChange}
           onBack={handleBack}
           onNext={handleNext}
@@ -115,6 +122,11 @@ export function CampaignWizard() {
       {step === 5 && (
         <StepReview
           draft={draft}
+          senderProfiles={senderProfiles}
+          templates={templates}
+          segments={segments}
+          lists={lists}
+          onChange={handleChange}
           onBack={handleBack}
           onGoToStep={handleGoToStep}
           onLaunchSuccess={handleLaunchSuccess}

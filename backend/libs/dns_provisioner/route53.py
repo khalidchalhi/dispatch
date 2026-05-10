@@ -36,20 +36,38 @@ class Route53DNSProvisioner(DNSProvisioner):
 
     async def create_record(self, *, zone_id: str, record: DNSRecordInput) -> str:
         await asyncio.to_thread(
-            self._upsert_record_sync,
+            self._upsert_records_sync,
             zone_id,
-            record,
+            [record],
         )
         return self._record_id(record)
 
     async def update_record(self, *, zone_id: str, record_id: str, record: DNSRecordInput) -> str:
         _ = record_id
         await asyncio.to_thread(
-            self._upsert_record_sync,
+            self._upsert_records_sync,
             zone_id,
-            record,
+            [record],
         )
         return self._record_id(record)
+
+    async def upsert_records(
+        self,
+        *,
+        zone_id: str,
+        records: list[DNSRecordInput],
+    ) -> dict[str, str]:
+        if not records:
+            return {}
+        await asyncio.to_thread(
+            self._upsert_records_sync,
+            zone_id,
+            records,
+        )
+        return {
+            self._record_id(record): self._record_id(record)
+            for record in records
+        }
 
     async def delete_record(self, *, zone_id: str, record_id: str) -> None:
         name, record_type = self._parse_record_id(record_id)
@@ -103,17 +121,19 @@ class Route53DNSProvisioner(DNSProvisioner):
             self._raise_mapped_error(exc)
             raise
 
-    def _upsert_record_sync(self, zone_id: str, record: DNSRecordInput) -> None:
+    def _upsert_records_sync(self, zone_id: str, records: list[DNSRecordInput]) -> None:
         assert self.client is not None
+        changes = [
+            {
+                "Action": "UPSERT",
+                "ResourceRecordSet": self._to_record_set(record),
+            }
+            for record in records
+        ]
         request_payload = {
             "HostedZoneId": zone_id,
             "ChangeBatch": {
-                "Changes": [
-                    {
-                        "Action": "UPSERT",
-                        "ResourceRecordSet": self._to_record_set(record),
-                    }
-                ]
+                "Changes": changes
             },
         }
         try:

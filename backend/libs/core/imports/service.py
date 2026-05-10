@@ -22,7 +22,7 @@ from libs.core.contacts.repository import ContactRepository
 from libs.core.db.session import get_session_factory
 from libs.core.db.uow import UnitOfWork
 from libs.core.errors import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
-from libs.core.imports.models import ImportJob
+from libs.core.imports.models import ImportJob, ImportRow
 from libs.core.imports.repository import ImportRepository
 from libs.core.imports.schemas import ImportJobResponse, ImportJobStatus, ImportRunSummary
 from libs.core.lists.repository import ListRepository
@@ -230,6 +230,26 @@ class ImportService:
                 raise NotFoundError("Import job not found")
             sample_error_rows = await repo.list_sample_error_rows(import_job_id=job.id, limit=20)
             return ImportJobResponse.from_model(job, sample_error_rows=sample_error_rows)
+
+    async def get_import_job_error_rows(
+        self,
+        *,
+        actor: CurrentActor,
+        job_id: str,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[ImportRow]:
+        self._require_admin(actor)
+        async with self._session_factory() as session:
+            repo = ImportRepository(session)
+            job = await repo.get_import_job_by_id(job_id)
+            if job is None:
+                raise NotFoundError("Import job not found")
+            return await repo.list_error_rows(
+                import_job_id=job.id,
+                limit=limit,
+                offset=offset,
+            )
 
     async def run_import_job(self, *, job_id: str) -> ImportRunSummary:
         initial = await self._load_job(job_id)

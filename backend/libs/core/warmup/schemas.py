@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Conservative ESP warmup schedule based on industry best practices.
-# Volume doubles roughly every 2 days early on, then plateaus.
-# Total: 30 days to reach 1 million/day capacity.
-_DEFAULT_SCHEDULE: list[int] = [
-    50, 100, 500, 1_000, 2_000,
-    5_000, 10_000, 20_000, 40_000, 70_000,
-    100_000, 150_000, 200_000, 250_000, 300_000,
-    350_000, 400_000, 450_000, 500_000, 600_000,
-    700_000, 800_000, 900_000, 1_000_000, 1_000_000,
-    1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
-]
+# 30-day warmup template aligned with Sprint 15 requirements:
+# day 1-3: 50/day
+# day 4-7: 100/day
+# day 8-14: 500/day
+# day 15-21: 1K/day
+# day 22-30: 5K/day
+_DEFAULT_SCHEDULE: list[int] = (
+    [50] * 3
+    + [100] * 4
+    + [500] * 7
+    + [1_000] * 7
+    + [5_000] * 9
+)
 
 # Tighter thresholds during warmup (half the normal circuit-breaker levels).
 WARMUP_BOUNCE_RATE_THRESHOLD: float = 0.005   # 0.5%

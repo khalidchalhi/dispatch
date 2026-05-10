@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
+import { publicEnv } from "@/lib/env";
 import { formatTimestamp, maskEmailAddress } from "@/lib/formatters";
 import type {
   SuppressionEntry,
@@ -26,6 +27,7 @@ import {
   SUPPRESSION_SOURCE_LABELS,
   SUPPRESSION_REASON_VARIANTS,
 } from "@/types/suppression";
+import type { ApiSuppressionRevealResponse } from "../_lib/suppression-api";
 
 const PAGE_SIZE = 20;
 
@@ -53,23 +55,11 @@ function parseEmailList(raw: string): string[] {
   return [...new Set(emails)];
 }
 
-function exportToCsv(entries: SuppressionEntry[]) {
-  const rows = [
-    ["email", "reason", "source", "note", "created_at"],
-    ...entries.map((e) => [
-      e.email,
-      e.reason,
-      e.source,
-      e.note ?? "",
-      e.createdAt,
-    ]),
-  ];
-  const csv = rows.map((r) => r.map((v) => `"${v}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
+function downloadCsvBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "suppression-list.csv";
+  a.download = fileName;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -86,7 +76,9 @@ export function SuppressionManager({
   isAdmin,
 }: SuppressionManagerProps) {
   const [entries, setEntries] = useState<SuppressionEntry[]>(initialEntries);
-  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+  const [revealedEmailsById, setRevealedEmailsById] = useState<Record<string, string>>({});
+  const [isExporting, setIsExporting] = useState(false);
+  const [revealingIds, setRevealingIds] = useState<Set<string>>(new Set());
 
   // Filters
   const [search, setSearch] = useState("");
@@ -133,15 +125,54 @@ export function SuppressionManager({
     setPage(0);
   }
 
-  async function handleReveal(entry: SuppressionEntry) {
+  async function handleExportCsv() {
+    if (!isAdmin || isExporting) return;
+    setIsExporting(true);
     try {
-      await clientJson(apiEndpoints.suppression.reveal(entry.id), {
-        method: "POST",
-      });
+      const response = await fetch(
+        new URL(apiEndpoints.suppression.export, publicEnv.NEXT_PUBLIC_API_BASE_URL),
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            Accept: "text/csv",
+          },
+        },
+      );
+      if (!response.ok) {
+        throw new Error("Export failed");
+      }
+      const blob = await response.blob();
+      downloadCsvBlob(blob, "suppression-export.csv");
+      toast.success("Suppression CSV exported.");
     } catch {
-      // Audit event fails silently — still reveal locally
+      toast.error("Failed to export suppression CSV.");
+    } finally {
+      setIsExporting(false);
     }
-    setRevealedIds((prev) => new Set([...prev, entry.id]));
+  }
+
+  async function handleReveal(entry: SuppressionEntry) {
+    if (!isAdmin || revealingIds.has(entry.id)) return;
+    setRevealingIds((prev) => new Set([...prev, entry.id]));
+    try {
+      const revealed = await clientJson<ApiSuppressionRevealResponse>(
+        apiEndpoints.suppression.reveal(entry.id),
+        {
+          method: "GET",
+        },
+      );
+      setRevealedEmailsById((prev) => ({ ...prev, [entry.id]: revealed.email }));
+      toast.success("Email revealed.");
+    } catch {
+      toast.error("Failed to reveal email.");
+    } finally {
+      setRevealingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(entry.id);
+        return next;
+      });
+    }
   }
 
   async function handleAdd() {
@@ -250,9 +281,10 @@ export function SuppressionManager({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => exportToCsv(filtered)}
+            disabled={!isAdmin || isExporting}
+            onClick={() => void handleExportCsv()}
           >
-            Export CSV
+            {isExporting ? "Exporting…" : "Export CSV"}
           </Button>
           <Button
             type="button"
@@ -372,10 +404,9 @@ export function SuppressionManager({
               </tr>
             ) : (
               pageEntries.map((entry) => {
-                const revealed = revealedIds.has(entry.id);
-                const displayEmail = revealed
-                  ? entry.email
-                  : maskEmailAddress(entry.email);
+                const revealedEmail = revealedEmailsById[entry.id] ?? null;
+                const isRevealed = revealedEmail !== null;
+                const displayEmail = isRevealed ? revealedEmail : maskEmailAddress(entry.email);
                 return (
                   <tr
                     key={entry.id}
@@ -384,13 +415,14 @@ export function SuppressionManager({
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="mono text-xs">{displayEmail}</span>
-                        {isAdmin && !revealed ? (
+                        {isAdmin && !isRevealed ? (
                           <button
                             type="button"
                             className="text-xs text-primary underline underline-offset-2 hover:no-underline"
+                            disabled={revealingIds.has(entry.id)}
                             onClick={() => void handleReveal(entry)}
                           >
-                            Reveal
+                            {revealingIds.has(entry.id) ? "Revealing…" : "Reveal"}
                           </button>
                         ) : null}
                       </div>

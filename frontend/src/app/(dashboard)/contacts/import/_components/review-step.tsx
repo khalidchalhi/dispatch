@@ -3,30 +3,50 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/shared/data-table";
 import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
-import type { ImportJob, ImportJobError, RejectionReason } from "@/types/import";
+import type { ImportJob } from "@/types/import";
+import type { ApiImportErrorRowResponse } from "../_lib/import-api";
 
-const reasonBadge: Record<RejectionReason, "danger" | "warning" | "muted"> = {
-  format: "danger",
-  invalid_mx: "warning",
-  role_account: "muted",
+type ImportErrorRowView = {
+  rowNumber: number;
+  column: string;
+  errorMessage: string;
 };
 
-const reasonLabel: Record<RejectionReason, string> = {
-  format: "Bad format",
-  invalid_mx: "No MX record",
-  role_account: "Role address",
-};
+function inferColumn(reason: string | null): string {
+  if (reason?.startsWith("gate") || reason === "duplicate_in_file") {
+    return "email";
+  }
+  return "unknown";
+}
 
-function exportErrorsCSV(errors: ImportJobError[], fileName: string) {
-  const header = "row,email,reason,detail\n";
+function toErrorMessage(reason: string | null): string {
+  if (reason === "gate1_invalid_format") return "Invalid email format";
+  if (reason === "gate1_disposable_domain") return "Disposable domain";
+  if (reason === "gate2_no_mx") return "No MX records for domain";
+  if (reason === "gate2_smtp_probe_failed") return "SMTP validation failed";
+  if (reason === "gate3_role_account") return "Role-based email is blocked";
+  if (reason === "duplicate_in_file") return "Duplicate email in CSV";
+  if (!reason) return "Validation error";
+  return reason.replaceAll("_", " ");
+}
+
+function toImportErrorRowView(api: ApiImportErrorRowResponse): ImportErrorRowView {
+  return {
+    rowNumber: api.row_number,
+    column: inferColumn(api.error_reason),
+    errorMessage: toErrorMessage(api.error_reason),
+  };
+}
+
+function exportErrorsCSV(errors: ImportErrorRowView[], fileName: string) {
+  const header = "row,column,error_message\n";
   const rows = errors
     .map(
       (e) =>
-        `${e.rowNumber},"${e.rawEmail}","${e.reason}","${e.detail.replace(/"/g, '""')}"`,
+        `${e.rowNumber},"${e.column}","${e.errorMessage.replace(/"/g, '""')}"`,
     )
     .join("\n");
   const blob = new Blob([header + rows], { type: "text/csv" });
@@ -45,17 +65,17 @@ type ReviewStepProps = {
 };
 
 export function ReviewStep({ job }: ReviewStepProps) {
-  const [errors, setErrors] = useState<ImportJobError[]>([]);
+  const [errors, setErrors] = useState<ImportErrorRowView[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     async function load() {
       try {
-        const result = await clientJson<ImportJobError[]>(
+        const result = await clientJson<ApiImportErrorRowResponse[]>(
           apiEndpoints.contacts.importJobErrors(job.id),
         );
-        setErrors(result);
+        setErrors(result.map(toImportErrorRowView));
       } catch {
         setFetchError(true);
       } finally {
@@ -122,9 +142,8 @@ export function ReviewStep({ job }: ReviewStepProps) {
             <DataTable
               columns={[
                 { key: "row", label: "Row" },
-                { key: "email", label: "Email" },
-                { key: "reason", label: "Reason" },
-                { key: "detail", label: "Detail" },
+                { key: "column", label: "Column" },
+                { key: "error", label: "Error message" },
               ]}
               rows={errors.map((e) => ({
                 row: (
@@ -132,16 +151,11 @@ export function ReviewStep({ job }: ReviewStepProps) {
                     #{e.rowNumber}
                   </span>
                 ),
-                email: (
-                  <span className="mono text-sm">{e.rawEmail}</span>
+                column: (
+                  <span className="mono text-sm">{e.column}</span>
                 ),
-                reason: (
-                  <Badge variant={reasonBadge[e.reason]}>
-                    {reasonLabel[e.reason]}
-                  </Badge>
-                ),
-                detail: (
-                  <span className="text-sm text-text-muted">{e.detail}</span>
+                error: (
+                  <span className="text-sm text-text-muted">{e.errorMessage}</span>
                 ),
               }))}
             />

@@ -106,3 +106,8 @@ class TemplatePreviewResponse(BaseModel):
     rendered_subject: str
     rendered_body_text: str
     rendered_body_html: str | None
+
+
+class TemplateMergeTagResponse(BaseModel):
+    tag: str
+    label: str

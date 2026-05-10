@@ -17,6 +17,33 @@ type VerifyButtonProps = {
   initialStatus: DomainStatus;
 };
 
+type VerifyDomainResponse = {
+  domain: {
+    verification_status: string;
+    reputation_status: string;
+  };
+  fully_verified: boolean;
+  verified_records: number;
+  total_records: number;
+};
+
+type DomainDetailStatusResponse = {
+  verification_status: string;
+  reputation_status: string;
+};
+
+function toDomainStatus(
+  verificationStatus: string,
+  reputationStatus: string,
+): DomainStatus {
+  if (reputationStatus === "retired") return "retired";
+  if (reputationStatus === "burnt") return "burnt";
+  if (reputationStatus === "cooling") return "cooling";
+  if (verificationStatus === "verified") return "verified";
+  if (verificationStatus === "pending") return "pending";
+  return "verifying";
+}
+
 export function VerifyButton({ domainId, initialStatus }: VerifyButtonProps) {
   const [status, setStatus] = useState<DomainStatus>(initialStatus);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -47,16 +74,20 @@ export function VerifyButton({ domainId, initialStatus }: VerifyButtonProps) {
         if (cancelled) return;
 
         try {
-          const domain = await clientJson<{ status: DomainStatus }>(
+          const domain = await clientJson<DomainDetailStatusResponse>(
             apiEndpoints.domains.byId(domainId),
             { redirectOnUnauthorized: true },
           );
 
           if (!cancelled) {
-            setStatus(domain.status);
-            if (domain.status === "verifying") {
+            const polledStatus = toDomainStatus(
+              domain.verification_status,
+              domain.reputation_status,
+            );
+            setStatus(polledStatus);
+            if (polledStatus === "verifying") {
               scheduleNextPoll();
-            } else if (domain.status === "verified") {
+            } else if (polledStatus === "verified") {
               toast.success("Domain verified successfully.");
             }
           }
@@ -78,12 +109,28 @@ export function VerifyButton({ domainId, initialStatus }: VerifyButtonProps) {
     setIsSubmitting(true);
 
     try {
-      await clientJson(apiEndpoints.domains.verify(domainId), {
-        method: "POST",
-        redirectOnUnauthorized: true,
-      });
-      setStatus("verifying");
-      toast.info("Verification started. Polling DNS records every 5 seconds…");
+      const result = await clientJson<VerifyDomainResponse>(
+        apiEndpoints.domains.verify(domainId),
+        {
+          method: "POST",
+          redirectOnUnauthorized: true,
+        },
+      );
+      const nextStatus = toDomainStatus(
+        result.domain.verification_status,
+        result.domain.reputation_status,
+      );
+      setStatus(nextStatus);
+
+      if (result.fully_verified || nextStatus === "verified") {
+        toast.success(
+          `Domain verified (${result.verified_records}/${result.total_records} records).`,
+        );
+      } else {
+        toast.success(
+          `Verification started (${result.verified_records}/${result.total_records} records verified).`,
+        );
+      }
     } catch {
       toast.error("Could not start verification. Try again in a moment.");
     } finally {

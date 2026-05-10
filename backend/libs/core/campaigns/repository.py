@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.core.campaigns.models import Campaign, CampaignRun, Message, SendBatch
 from libs.core.contacts.models import Contact, SubscriptionStatus
+from libs.core.db.pagination import decode_cursor
 from libs.core.domains.models import Domain
 from libs.core.segments.models import SegmentSnapshot
 from libs.core.sender_profiles.models import SenderProfile
@@ -22,6 +23,16 @@ class QueuedMessageDispatchTarget:
     domain_name: str
 
 
+@dataclass(frozen=True, slots=True)
+class MessageDispatchContext:
+    message_id: str
+    status: str
+    error_code: str | None
+    domain_id: str
+    domain_name: str
+    domain_rate_limit_per_hour: int
+
+
 class CampaignRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -30,6 +41,28 @@ class CampaignRepository:
         stmt = select(Campaign).where(Campaign.id == campaign_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_campaigns(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        status: str | None = None,
+    ) -> list[Campaign]:
+        stmt = select(Campaign)
+        if status is not None:
+            stmt = stmt.where(Campaign.status == status)
+        stmt = stmt.order_by(Campaign.updated_at.desc(), Campaign.id.desc())
+        stmt = stmt.limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_campaigns(self, *, status: str | None = None) -> int:
+        stmt = select(func.count()).select_from(Campaign)
+        if status is not None:
+            stmt = stmt.where(Campaign.status == status)
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
 
     async def update_campaign(self, *, campaign_id: str, values: dict[str, object]) -> bool:
         if not values:
@@ -115,6 +148,20 @@ class CampaignRepository:
 
     async def get_template_version_by_id(self, template_version_id: str) -> TemplateVersion | None:
         stmt = select(TemplateVersion).where(TemplateVersion.id == template_version_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_template_version_by_template_and_number(
+        self,
+        *,
+        template_id: str,
+        version_number: int,
+    ) -> TemplateVersion | None:
+        stmt = (
+            select(TemplateVersion)
+            .where(TemplateVersion.template_id == template_id)
+            .where(TemplateVersion.version_number == version_number)
+        )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -218,6 +265,35 @@ class CampaignRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_messages_for_campaign(
+        self,
+        *,
+        campaign_id: str,
+        limit: int,
+        cursor: str | None,
+        status: str | None = None,
+    ) -> list[Message]:
+        stmt = select(Message).where(Message.campaign_id == campaign_id)
+        if status is not None:
+            stmt = stmt.where(Message.status == status)
+
+        if cursor:
+            cursor_created_at, cursor_id = decode_cursor(cursor)
+            stmt = stmt.where(
+                or_(
+                    Message.created_at < cursor_created_at,
+                    and_(
+                        Message.created_at == cursor_created_at,
+                        Message.id < cursor_id,
+                    ),
+                )
+            )
+
+        stmt = stmt.order_by(Message.created_at.desc(), Message.id.desc())
+        stmt = stmt.limit(limit + 1)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_queued_message_ids_for_run(self, campaign_run_id: str) -> list[str]:
         stmt = (
             select(Message.id)
@@ -255,6 +331,33 @@ class CampaignRepository:
         stmt = select(Message).where(Message.id == message_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_message_dispatch_context(self, message_id: str) -> MessageDispatchContext | None:
+        stmt = (
+            select(
+                Message.id,
+                Message.status,
+                Message.error_code,
+                Message.domain_id,
+                Domain.name,
+                Domain.rate_limit_per_hour,
+            )
+            .join(Domain, Domain.id == Message.domain_id)
+            .where(Message.id == message_id)
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        row = result.first()
+        if row is None:
+            return None
+        return MessageDispatchContext(
+            message_id=str(row[0]),
+            status=str(row[1]),
+            error_code=str(row[2]) if row[2] is not None else None,
+            domain_id=str(row[3]),
+            domain_name=str(row[4]),
+            domain_rate_limit_per_hour=int(row[5]),
+        )
 
     async def claim_message_for_sending(self, message_id: str) -> bool:
         stmt = (

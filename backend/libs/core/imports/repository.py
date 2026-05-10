@@ -138,11 +138,25 @@ class ImportRepository:
         import_job_id: str,
         limit: int = 10,
     ) -> list[ImportRow]:
+        return await self.list_error_rows(
+            import_job_id=import_job_id,
+            limit=limit,
+            offset=0,
+        )
+
+    async def list_error_rows(
+        self,
+        *,
+        import_job_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ImportRow]:
         stmt = (
             select(ImportRow)
             .where(ImportRow.import_job_id == import_job_id)
             .where(ImportRow.status.in_(("invalid", "suppressed", "duplicate", "errored")))
             .order_by(ImportRow.row_number.asc())
+            .offset(offset)
             .limit(limit)
         )
         result = await self.session.execute(stmt)

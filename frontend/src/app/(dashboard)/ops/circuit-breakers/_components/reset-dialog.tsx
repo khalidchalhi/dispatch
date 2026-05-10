@@ -24,7 +24,7 @@ const reasonLabel: Record<string, string> = {
 type ResetDialogProps = {
   entry: BreakerEntry | null;
   onClose: () => void;
-  onReset: (breakerId: string) => void;
+  onReset: (breakerId: string) => void | Promise<void>;
 };
 
 export function ResetDialog({ entry, onClose, onReset }: ResetDialogProps) {
@@ -54,7 +54,7 @@ export function ResetDialog({ entry, onClose, onReset }: ResetDialogProps) {
         body: { justification: justification.trim() },
       });
       toast.success(`Circuit breaker reset for ${entry.entityName}`);
-      onReset(entry.id);
+      await onReset(entry.id);
       handleOpenChange(false);
     } catch {
       toast.error("Reset failed. Please retry.");

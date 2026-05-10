@@ -2,19 +2,28 @@
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { mockSegments } from "@/app/(dashboard)/segments/_lib/segments-queries";
-import { lists } from "@/app/(dashboard)/lists/_lib/lists-queries";
 import type { CampaignDraft } from "@/types/campaign";
+import type { List } from "@/types/list";
+import type { Segment } from "@/types/segment";
 
 type StepAudienceProps = {
   draft: CampaignDraft;
+  segments: Segment[];
+  lists: List[];
   onChange: (patch: Partial<CampaignDraft>) => void;
   onBack: () => void;
   onNext: () => void;
 };
 
-export function StepAudience({ draft, onChange, onBack, onNext }: StepAudienceProps) {
-  const activeSegments = mockSegments.filter((s) => !s.isArchived);
+export function StepAudience({
+  draft,
+  segments,
+  lists,
+  onChange,
+  onBack,
+  onNext,
+}: StepAudienceProps) {
+  const activeSegments = segments.filter((s) => !s.isArchived);
 
   const selectedSegment =
     draft.audienceType === "segment"

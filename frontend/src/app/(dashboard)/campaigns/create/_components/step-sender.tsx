@@ -2,19 +2,26 @@
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { senderProfiles } from "@/app/(dashboard)/sender-profiles/_lib/sender-profiles-queries";
 import type { CampaignDraft } from "@/types/campaign";
-
-const activeSenders = senderProfiles.filter((sp) => sp.status === "active");
+import type { SenderProfile } from "@/types/domain";
 
 type StepSenderProps = {
   draft: CampaignDraft;
+  senderProfiles: SenderProfile[];
   onChange: (patch: Partial<CampaignDraft>) => void;
   onBack: () => void;
   onNext: () => void;
 };
 
-export function StepSender({ draft, onChange, onBack, onNext }: StepSenderProps) {
+export function StepSender({
+  draft,
+  senderProfiles,
+  onChange,
+  onBack,
+  onNext,
+}: StepSenderProps) {
+  const activeSenders = senderProfiles.filter((sp) => sp.status === "active");
+
   return (
     <div className="grid gap-6">
       <div className="surface-panel p-6 grid gap-4">

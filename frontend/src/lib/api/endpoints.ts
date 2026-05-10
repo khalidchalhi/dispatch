@@ -19,20 +19,29 @@ export const apiEndpoints = {
   domains: {
     list: "/domains",
     byId: (id: string) => `/domains/${id}`,
+    detail: (id: string) => `/domains/${id}`,
     create: "/domains",
     verify: (id: string) => `/domains/${id}/verify`,
     health: (id: string) => `/domains/${id}/health`,
     retire: (id: string) => `/domains/${id}/retire`,
     provision: (id: string) => `/domains/${id}/provision`,
     provisioningAttempt: (id: string) => `/domains/${id}/provision`,
+    provisioningStatus: (id: string) => `/domains/${id}/provisioning-status`,
     zones: (provider: string) => `/domains/zones?provider=${provider}`,
     warmup: (id: string) => `/domains/${id}/warmup`,
     warmupExtend: (id: string) => `/domains/${id}/warmup/extend`,
     postmaster: (id: string) => `/domains/${id}/postmaster`,
     postmasterConnect: (id: string) => `/domains/${id}/postmaster/connect`,
+    throttle: (id: string) => `/domains/${id}/throttle`,
   },
   ops: {
     provisioning: "/ops/provisioning",
+    queues: "/ops/queues",
+  },
+  circuitBreakers: {
+    list: "/circuit-breakers",
+    byId: (id: string) => `/circuit-breakers/${id}`,
+    reset: (id: string) => `/circuit-breakers/${id}/reset`,
   },
   senderProfiles: {
     list: "/sender-profiles",
@@ -49,6 +58,7 @@ export const apiEndpoints = {
     bulkUnsubscribe: "/contacts/bulk-unsubscribe",
     bulkImport: "/contacts/bulk-import",
     importJob: (id: string) => `/contacts/bulk-import/${id}`,
+    importJobStatus: (id: string) => `/contacts/bulk-import/${id}/status`,
     importJobErrors: (id: string) => `/contacts/bulk-import/${id}/errors`,
   },
   lists: {
@@ -62,7 +72,7 @@ export const apiEndpoints = {
       `/lists/${listId}/members/${contactId}`,
   },
   publicUnsubscribe: {
-    confirm: "/unsubscribe",
+    confirm: "/contacts/unsubscribe/public",
   },
   segments: {
     list: "/segments",

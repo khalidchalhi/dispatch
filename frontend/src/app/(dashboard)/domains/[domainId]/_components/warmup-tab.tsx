@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -46,11 +47,13 @@ type WarmupTabProps = {
 };
 
 export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
+  const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<WarmupPreset>(
     warmup.schedule.preset,
   );
   const [aggressiveConfirm, setAggressiveConfirm] = useState(false);
+  const [extensionDays, setExtensionDays] = useState("7");
   const [saving, setSaving] = useState(false);
   const [extending, setExtending] = useState(false);
 
@@ -84,6 +87,7 @@ export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
         body: { preset: selectedPreset },
       });
       toast.success("Warmup schedule updated.");
+      router.refresh();
       setEditing(false);
       setAggressiveConfirm(false);
     } catch {
@@ -94,13 +98,20 @@ export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
   }
 
   async function handleExtend() {
+    const days = Number.parseInt(extensionDays, 10);
+    if (!Number.isFinite(days) || days <= 0) {
+      toast.error("Enter a positive number of extension days.");
+      return;
+    }
+
     setExtending(true);
     try {
       await clientJson(apiEndpoints.domains.warmupExtend(domainId), {
         method: "POST",
-        body: { days: 7 },
+        body: { days },
       });
-      toast.success("Warmup extended by 7 days.");
+      toast.success(`Warmup extended by ${days} days.`);
+      router.refresh();
     } catch {
       toast.error("Failed to extend warmup. Please try again.");
     } finally {
@@ -237,6 +248,19 @@ export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
         <div className="flex items-center gap-3 border-t border-border pt-4">
           {!editing && (
             <>
+              <div className="flex items-center gap-2">
+                <label htmlFor="extend-days" className="text-xs text-text-muted">
+                  Days
+                </label>
+                <input
+                  id="extend-days"
+                  type="number"
+                  min={1}
+                  className="h-8 w-20 rounded-md border border-border bg-background px-2 text-sm"
+                  value={extensionDays}
+                  onChange={(event) => setExtensionDays(event.target.value)}
+                />
+              </div>
               <Button
                 variant="outline"
                 size="sm"
@@ -244,7 +268,7 @@ export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
                 onClick={() => void handleExtend()}
               >
                 <TrendingUp className="mr-2 h-3.5 w-3.5" aria-hidden />
-                Extend by 7 days
+                Extend warmup
               </Button>
               <Button
                 variant="outline"

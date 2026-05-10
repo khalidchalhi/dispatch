@@ -10,6 +10,7 @@ from libs.core.auth.schemas import CurrentActor, MessageResponse
 from libs.core.templates.schemas import (
     TemplateCreateRequest,
     TemplateListResponse,
+    TemplateMergeTagResponse,
     TemplatePreviewRequest,
     TemplatePreviewResponse,
     TemplateResponse,
@@ -23,6 +24,16 @@ router = APIRouter(prefix="/templates", tags=["templates"])
 
 def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
+
+
+@router.get("/merge-tags", response_model=list[TemplateMergeTagResponse])
+async def list_merge_tags(
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    service: Annotated[TemplateService, Depends(get_template_service_dep)],
+) -> list[TemplateMergeTagResponse]:
+    merge_tags = await service.list_available_merge_tags(actor=actor)
+    return [TemplateMergeTagResponse(tag=item["tag"], label=item["label"]) for item in merge_tags]
 
 
 @router.post("", response_model=TemplateResponse, status_code=status.HTTP_201_CREATED)
@@ -125,6 +136,31 @@ async def get_template_version(
         version_number=version_number,
     )
     return TemplateVersionResponse.from_model(version)
+
+
+@router.post("/{template_id}/versions/{version_number}/publish", response_model=TemplateResponse)
+async def publish_template_version(
+    template_id: str,
+    version_number: int,
+    request: Request,
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    service: Annotated[TemplateService, Depends(get_template_service_dep)],
+) -> TemplateResponse:
+    published = await service.publish_template_version(
+        actor=actor,
+        template_id=template_id,
+        version_number=version_number,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return TemplateResponse.from_model(
+        published.template,
+        category=published.category,
+        is_archived=published.is_archived,
+        head_version_number=published.head_version_number,
+        versions=published.versions,
+    )
 
 
 @router.patch("/{template_id}/versions/{version_number}", response_model=MessageResponse)

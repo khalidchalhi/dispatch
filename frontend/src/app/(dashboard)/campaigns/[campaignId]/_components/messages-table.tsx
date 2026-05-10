@@ -39,8 +39,6 @@ type MessagesTableProps = {
   isLoadingMore: boolean;
   selectedMessageId: string | null;
   onSelectMessage: (id: string) => void;
-  onBulkRequeue: (ids: string[]) => void;
-  isRequeuing: boolean;
 };
 
 export function MessagesTable({
@@ -52,13 +50,7 @@ export function MessagesTable({
   isLoadingMore,
   selectedMessageId,
   onSelectMessage,
-  onBulkRequeue,
-  isRequeuing,
 }: MessagesTableProps) {
-  const failedIds = messages
-    .filter((m) => m.status === "failed")
-    .map((m) => m.id);
-
   function formatTime(iso: string) {
     try {
       return new Date(iso).toLocaleTimeString([], {
@@ -76,18 +68,6 @@ export function MessagesTable({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="section-title">Messages</h3>
         <div className="flex flex-wrap items-center gap-2">
-          {failedIds.length > 0 && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={isRequeuing}
-              onClick={() => onBulkRequeue(failedIds)}
-            >
-              {isRequeuing
-                ? "Requeueing…"
-                : `Re-queue ${failedIds.length} failed`}
-            </Button>
-          )}
           <select
             className="field h-9"
             value={statusFilter}

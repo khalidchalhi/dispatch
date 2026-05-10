@@ -1,8 +1,16 @@
 import Link from "next/link";
+import { serverJson } from "@/lib/api/server";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
 import { TemplatesManager } from "./_components/templates-manager";
-import { mockTemplates } from "./_lib/templates-queries";
+import {
+  toTemplate,
+  type ApiTemplateListResponse,
+} from "./_lib/templates-api";
 
-export default function TemplatesPage() {
+export default async function TemplatesPage() {
+  const response = await serverJson<ApiTemplateListResponse>(ENDPOINTS.templates.list);
+  const templates = response.items.map(toTemplate);
+
   return (
     <div className="page-stack">
       <header className="page-intro">
@@ -34,7 +42,7 @@ export default function TemplatesPage() {
             </tr>
           </thead>
           <tbody>
-            {mockTemplates.map((template) => (
+            {templates.map((template) => (
               <tr
                 key={template.id}
                 className="border-b border-border last:border-0 hover:bg-surface-muted/50 transition-colors"

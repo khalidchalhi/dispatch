@@ -1,27 +1,31 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import {
-  mockTemplates,
-  getVersionsForTemplate,
-} from "@/app/(dashboard)/templates/_lib/templates-queries";
 import type { CampaignDraft } from "@/types/campaign";
+import type { WizardTemplate } from "../_lib/wizard-types";
 
 type StepTemplateProps = {
   draft: CampaignDraft;
+  templates: WizardTemplate[];
   onChange: (patch: Partial<CampaignDraft>) => void;
   onBack: () => void;
   onNext: () => void;
 };
 
-export function StepTemplate({ draft, onChange, onBack, onNext }: StepTemplateProps) {
-  const selectedTemplate = mockTemplates.find((t) => t.id === draft.templateId);
-  const versions = draft.templateId ? getVersionsForTemplate(draft.templateId) : [];
+export function StepTemplate({
+  draft,
+  templates,
+  onChange,
+  onBack,
+  onNext,
+}: StepTemplateProps) {
+  const selectedTemplate = templates.find((t) => t.id === draft.templateId);
+  const versions = selectedTemplate?.versions ?? [];
   const selectedVersion = versions.find((v) => v.version === draft.templateVersion);
 
   function handleTemplateChange(id: string) {
-    const tmpl = mockTemplates.find((t) => t.id === id);
-    const vers = getVersionsForTemplate(id);
+    const tmpl = templates.find((t) => t.id === id);
+    const vers = tmpl?.versions ?? [];
     const defaultVersion = vers.find((v) => v.version === tmpl?.activeVersion) ?? vers.at(-1);
     onChange({
       templateId: id,
@@ -45,7 +49,7 @@ export function StepTemplate({ draft, onChange, onBack, onNext }: StepTemplatePr
             onChange={(e) => handleTemplateChange(e.target.value)}
           >
             <option value="">Select a template…</option>
-            {mockTemplates.map((t) => (
+            {templates.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
               </option>

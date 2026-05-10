@@ -54,7 +54,8 @@ function computeDiff(a: string, b: string): DiffLine[] {
 type VersionHistoryProps = {
   versions: TemplateVersion[];
   activeVersion: number | null;
-  onRestore: (version: TemplateVersion) => void;
+  onPublish: (version: TemplateVersion) => void;
+  publishingVersionId: string | null;
   onSelect: (version: TemplateVersion) => void;
   selectedVersion: TemplateVersion | null;
 };
@@ -62,7 +63,8 @@ type VersionHistoryProps = {
 export function VersionHistory({
   versions,
   activeVersion,
-  onRestore,
+  onPublish,
+  publishingVersionId,
   onSelect,
   selectedVersion,
 }: VersionHistoryProps) {
@@ -116,9 +118,10 @@ export function VersionHistory({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => onRestore(v)}
+                  onClick={() => onPublish(v)}
+                  disabled={publishingVersionId === v.id || v.version === activeVersion}
                 >
-                  Restore
+                  {publishingVersionId === v.id ? "Publishing…" : "Publish"}
                 </Button>
               </div>
             </li>

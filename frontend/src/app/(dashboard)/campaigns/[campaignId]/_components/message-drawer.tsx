@@ -2,6 +2,7 @@
 
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { CampaignMessageDetail, MessageEventType } from "@/types/campaign";
 
@@ -31,9 +32,21 @@ type MessageDrawerProps = {
   detail: CampaignMessageDetail | null;
   open: boolean;
   onClose: () => void;
+  onRequeue: () => void;
+  isRequeuing: boolean;
+  isLoading: boolean;
 };
 
-export function MessageDrawer({ detail, open, onClose }: MessageDrawerProps) {
+export function MessageDrawer({
+  detail,
+  open,
+  onClose,
+  onRequeue,
+  isRequeuing,
+  isLoading,
+}: MessageDrawerProps) {
+  const canRequeue = detail?.status === "failed";
+
   return (
     <DialogPrimitive.Root open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <DialogPrimitive.Portal>
@@ -46,16 +59,29 @@ export function MessageDrawer({ detail, open, onClose }: MessageDrawerProps) {
             <DialogPrimitive.Title className="text-base font-semibold">
               Message inspector
             </DialogPrimitive.Title>
-            <DialogPrimitive.Close
-              className="rounded-[8px] p-1 text-text-muted transition-colors hover:bg-surface-muted hover:text-foreground"
-              onClick={onClose}
-            >
-              <X className="h-4 w-4" />
-              <span className="sr-only">Close</span>
-            </DialogPrimitive.Close>
+            <div className="flex items-center gap-2">
+              {canRequeue ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isRequeuing}
+                  onClick={() => void onRequeue()}
+                >
+                  {isRequeuing ? "Requeueing…" : "Re-queue message"}
+                </Button>
+              ) : null}
+              <DialogPrimitive.Close
+                className="rounded-[8px] p-1 text-text-muted transition-colors hover:bg-surface-muted hover:text-foreground"
+                onClick={onClose}
+              >
+                <X className="h-4 w-4" />
+                <span className="sr-only">Close</span>
+              </DialogPrimitive.Close>
+            </div>
           </div>
 
-          {detail ? (
+          {detail && !isLoading ? (
             <div className="p-6">
               <Tabs defaultValue="overview">
                 <TabsList>
@@ -142,7 +168,9 @@ export function MessageDrawer({ detail, open, onClose }: MessageDrawerProps) {
             </div>
           ) : (
             <div className="p-6">
-              <p className="text-sm text-text-muted">Loading message…</p>
+              <p className="text-sm text-text-muted">
+                {isLoading ? "Loading message…" : "Message details unavailable."}
+              </p>
             </div>
           )}
         </DialogPrimitive.Content>

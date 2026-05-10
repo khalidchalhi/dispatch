@@ -19,7 +19,54 @@ vi.mock("next/navigation", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/lib/api/client", () => ({
-  clientJson: vi.fn().mockResolvedValue({}),
+  clientJson: vi.fn(async (path: string, options?: { query?: { cursor?: string } }) => {
+    if (path.includes("/campaigns/") && path.includes("/messages")) {
+      const cursor = options?.query?.cursor;
+      if (!cursor) {
+        return {
+          items: [
+            {
+              message_id: "msg-live-1",
+              campaign_id: "cmp-003",
+              to_email: "first@example.com",
+              status: "failed",
+              has_bounce: true,
+              has_click: false,
+              has_complaint: false,
+              ses_message_id: null,
+              last_event_at: "2026-04-01T10:00:00Z",
+            },
+          ],
+          next_cursor: "cursor-2",
+        };
+      }
+      return {
+        items: [
+          {
+            message_id: "msg-live-2",
+            campaign_id: "cmp-003",
+            to_email: "second@example.com",
+            status: "queued",
+            has_bounce: false,
+            has_click: false,
+            has_complaint: false,
+            ses_message_id: null,
+            last_event_at: "2026-04-01T10:01:00Z",
+          },
+        ],
+        next_cursor: null,
+      };
+    }
+    if (path.includes("/campaigns/") && options?.query === undefined) {
+      return {
+        id: "cmp-003",
+        name: "Seed inbox test",
+        status: "running",
+        updated_at: "2026-04-01T10:00:00Z",
+      };
+    }
+    return {};
+  }),
 }));
 
 // ─── getMockCampaignDetail ────────────────────────────────────────────────────
@@ -182,8 +229,6 @@ describe("MessagesTable", () => {
     isLoadingMore: false,
     selectedMessageId: null,
     onSelectMessage: vi.fn(),
-    onBulkRequeue: vi.fn(),
-    isRequeuing: false,
   };
 
   it("renders message rows", () => {
@@ -201,14 +246,6 @@ describe("MessagesTable", () => {
     expect(
       screen.queryByRole("button", { name: /load more/i }),
     ).not.toBeInTheDocument();
-  });
-
-  it("shows re-queue button when failed messages exist", () => {
-    const failedMsg = { ...page.messages[0]!, status: "failed" as const };
-    render(<MessagesTable {...base} messages={[failedMsg]} />);
-    expect(
-      screen.getByRole("button", { name: /re-queue/i }),
-    ).toBeInTheDocument();
   });
 
   it("calls onLoadMore when Load more is clicked", () => {
@@ -247,24 +284,60 @@ describe("MessageDrawer", () => {
   const detail = getMockMessageDetail("cmp-003", page.messages[0]!.id)!;
 
   it("does not render when open=false", () => {
-    render(<MessageDrawer detail={detail} open={false} onClose={vi.fn()} />);
+    render(
+      <MessageDrawer
+        detail={detail}
+        open={false}
+        onClose={vi.fn()}
+        onRequeue={vi.fn()}
+        isRequeuing={false}
+        isLoading={false}
+      />,
+    );
     expect(screen.queryByText("Message inspector")).not.toBeInTheDocument();
   });
 
   it("renders when open=true", () => {
-    render(<MessageDrawer detail={detail} open={true} onClose={vi.fn()} />);
+    render(
+      <MessageDrawer
+        detail={detail}
+        open={true}
+        onClose={vi.fn()}
+        onRequeue={vi.fn()}
+        isRequeuing={false}
+        isLoading={false}
+      />,
+    );
     expect(screen.getByText("Message inspector")).toBeInTheDocument();
   });
 
   it("shows Overview, Rendered email, and Event timeline tabs", () => {
-    render(<MessageDrawer detail={detail} open={true} onClose={vi.fn()} />);
+    render(
+      <MessageDrawer
+        detail={detail}
+        open={true}
+        onClose={vi.fn()}
+        onRequeue={vi.fn()}
+        isRequeuing={false}
+        isLoading={false}
+      />,
+    );
     expect(screen.getByRole("tab", { name: /overview/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /rendered email/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /event timeline/i })).toBeInTheDocument();
   });
 
   it("shows contact email in overview", () => {
-    render(<MessageDrawer detail={detail} open={true} onClose={vi.fn()} />);
+    render(
+      <MessageDrawer
+        detail={detail}
+        open={true}
+        onClose={vi.fn()}
+        onRequeue={vi.fn()}
+        isRequeuing={false}
+        isLoading={false}
+      />,
+    );
     expect(screen.getByText(detail.email)).toBeInTheDocument();
   });
 
@@ -275,7 +348,16 @@ describe("MessageDrawer", () => {
 
   it("calls onClose when close button is clicked", () => {
     const onClose = vi.fn();
-    render(<MessageDrawer detail={detail} open={true} onClose={onClose} />);
+    render(
+      <MessageDrawer
+        detail={detail}
+        open={true}
+        onClose={onClose}
+        onRequeue={vi.fn()}
+        isRequeuing={false}
+        isLoading={false}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(onClose).toHaveBeenCalled();
   });

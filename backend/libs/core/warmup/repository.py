@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from libs.core.campaigns.models import Message
 from libs.core.domains.models import Domain
 from libs.core.events.models import RollingMetric
 
@@ -47,6 +47,17 @@ class WarmupRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def count_sent_today(self, *, domain_id: str) -> int:
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        stmt = (
+            select(func.count(Message.id))
+            .where(Message.domain_id == domain_id)
+            .where(Message.sent_at.is_not(None))
+            .where(Message.sent_at >= day_start)
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one() or 0)
 
     @staticmethod
     def warmup_day_number(warmup_started_at: datetime) -> int:

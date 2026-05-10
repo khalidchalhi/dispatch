@@ -19,6 +19,7 @@ from libs.core.circuit_breaker.service import (
     get_circuit_breaker_service,
 )
 from libs.core.config import Settings, get_settings
+from libs.core.db.pagination import CursorPage, OffsetPage, encode_cursor
 from libs.core.db.session import get_session_factory
 from libs.core.db.uow import UnitOfWork
 from libs.core.errors import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
@@ -90,6 +91,31 @@ class MessageSendResult:
     domain_name: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class SendMessageDispatchContext:
+    message_id: str
+    status: str
+    error_code: str | None
+    domain_id: str
+    domain_name: str
+    domain_rate_limit_per_hour: int
+
+
+@dataclass(slots=True, frozen=True)
+class CampaignPreflightCheck:
+    id: str
+    label: str
+    severity: str
+    detail: str
+
+
+@dataclass(slots=True, frozen=True)
+class CampaignPreflightResult:
+    campaign_id: str
+    checks: list[CampaignPreflightCheck]
+    generated_at: datetime
+
+
 class CampaignService:
     def __init__(
         self,
@@ -114,6 +140,505 @@ class CampaignService:
         self._renderer.globals.clear()
         self._renderer.filters.clear()
         self._renderer.tests.clear()
+
+    async def list_campaigns(
+        self,
+        *,
+        actor: CurrentActor,
+        limit: int,
+        offset: int,
+        status: str | None = None,
+    ) -> OffsetPage[Campaign]:
+        self._require_admin(actor)
+        async with self._session_factory() as session:
+            repo = CampaignRepository(session)
+            items = await repo.list_campaigns(limit=limit, offset=offset, status=status)
+            total = await repo.count_campaigns(status=status)
+        return OffsetPage(items=items, total=total, limit=limit, offset=offset)
+
+    async def create_campaign(
+        self,
+        *,
+        actor: CurrentActor,
+        payload: Any,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> Campaign:
+        self._require_admin(actor)
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = CampaignRepository(uow.require_session())
+            sender_profile = await repo.get_sender_profile_by_id(payload.sender_profile_id)
+            if sender_profile is None:
+                raise NotFoundError("Sender profile not found")
+
+            template_version_id = await self._resolve_template_version_id(
+                repo=repo,
+                template_version_id=payload.template_version_id,
+                template_id=payload.template_id,
+                template_version=payload.template_version,
+            )
+            segment_id, list_id = self._resolve_audience_ids(
+                segment_id=payload.segment_id,
+                list_id=payload.list_id,
+                audience_type=payload.audience_type,
+                audience_id=payload.audience_id,
+            )
+            schedule_type, scheduled_at = self._resolve_schedule(
+                schedule_type=payload.schedule_type,
+                scheduled_at=payload.scheduled_at,
+            )
+
+            campaign = Campaign(
+                name=payload.name.strip(),
+                campaign_type=payload.campaign_type.strip(),
+                sender_profile_id=sender_profile.id,
+                template_version_id=template_version_id,
+                segment_id=segment_id,
+                list_id=list_id,
+                schedule_type=schedule_type,
+                scheduled_at=scheduled_at,
+                timezone=payload.timezone,
+                send_rate_per_hour=payload.send_rate_per_hour,
+                status="scheduled" if schedule_type == "scheduled" else "draft",
+                tracking_opens=payload.tracking_opens,
+                tracking_clicks=payload.tracking_clicks,
+                created_by=actor.user.id,
+            )
+            uow.require_session().add(campaign)
+            await uow.require_session().flush()
+
+            await AuthRepository(uow.require_session()).write_audit_log(
+                actor_type=actor.actor_type,
+                actor_id=actor.user.id,
+                action="campaign.create",
+                resource_type="campaign",
+                resource_id=campaign.id,
+                after_state={
+                    "status": campaign.status,
+                    "schedule_type": schedule_type,
+                    "segment_id": segment_id,
+                    "list_id": list_id,
+                },
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            return campaign
+
+    async def get_campaign(self, *, actor: CurrentActor, campaign_id: str) -> Campaign:
+        self._require_admin(actor)
+        async with self._session_factory() as session:
+            repo = CampaignRepository(session)
+            campaign = await repo.get_campaign_by_id(campaign_id)
+            if campaign is None:
+                raise NotFoundError("Campaign not found")
+            return campaign
+
+    async def update_campaign(
+        self,
+        *,
+        actor: CurrentActor,
+        campaign_id: str,
+        payload: Any,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> Campaign:
+        self._require_admin(actor)
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = CampaignRepository(uow.require_session())
+            campaign = await repo.get_campaign_by_id(campaign_id)
+            if campaign is None:
+                raise NotFoundError("Campaign not found")
+            if campaign.status in {"running", "completed", "cancelled", "failed"}:
+                raise ConflictError("Campaign cannot be edited in its current status")
+
+            values: dict[str, object] = {}
+            changed = payload.model_fields_set
+
+            if "name" in changed and payload.name is not None:
+                values["name"] = payload.name.strip()
+            if "campaign_type" in changed and payload.campaign_type is not None:
+                values["campaign_type"] = payload.campaign_type.strip()
+            if "sender_profile_id" in changed and payload.sender_profile_id is not None:
+                sender_profile = await repo.get_sender_profile_by_id(payload.sender_profile_id)
+                if sender_profile is None:
+                    raise NotFoundError("Sender profile not found")
+                values["sender_profile_id"] = sender_profile.id
+
+            should_update_template = (
+                "template_version_id" in changed
+                or "template_id" in changed
+                or "template_version" in changed
+            )
+            if should_update_template:
+                values["template_version_id"] = await self._resolve_template_version_id(
+                    repo=repo,
+                    template_version_id=payload.template_version_id,
+                    template_id=payload.template_id,
+                    template_version=payload.template_version,
+                    fallback_template_version_id=campaign.template_version_id,
+                )
+
+            should_update_audience = (
+                "segment_id" in changed
+                or "list_id" in changed
+                or "audience_type" in changed
+                or "audience_id" in changed
+            )
+            if should_update_audience:
+                segment_id, list_id = self._resolve_audience_ids(
+                    segment_id=(
+                        payload.segment_id if "segment_id" in changed else campaign.segment_id
+                    ),
+                    list_id=payload.list_id if "list_id" in changed else campaign.list_id,
+                    audience_type=payload.audience_type if "audience_type" in changed else None,
+                    audience_id=payload.audience_id if "audience_id" in changed else None,
+                )
+                values["segment_id"] = segment_id
+                values["list_id"] = list_id
+
+            if "timezone" in changed and payload.timezone is not None:
+                values["timezone"] = payload.timezone
+            if "send_rate_per_hour" in changed and payload.send_rate_per_hour is not None:
+                values["send_rate_per_hour"] = payload.send_rate_per_hour
+            if "tracking_opens" in changed and payload.tracking_opens is not None:
+                values["tracking_opens"] = payload.tracking_opens
+            if "tracking_clicks" in changed and payload.tracking_clicks is not None:
+                values["tracking_clicks"] = payload.tracking_clicks
+
+            should_update_schedule = "schedule_type" in changed or "scheduled_at" in changed
+            if should_update_schedule:
+                schedule_type, scheduled_at = self._resolve_schedule(
+                    schedule_type=payload.schedule_type or campaign.schedule_type,
+                    scheduled_at=payload.scheduled_at,
+                )
+                values["schedule_type"] = schedule_type
+                values["scheduled_at"] = scheduled_at
+                if campaign.status == "draft" and schedule_type == "scheduled":
+                    values["status"] = "scheduled"
+                if campaign.status == "scheduled" and schedule_type == "immediate":
+                    values["status"] = "draft"
+
+            if values:
+                await repo.update_campaign(campaign_id=campaign.id, values=values)
+
+            refreshed = await repo.get_campaign_by_id(campaign.id)
+            if refreshed is None:
+                raise NotFoundError("Campaign not found")
+
+            await AuthRepository(uow.require_session()).write_audit_log(
+                actor_type=actor.actor_type,
+                actor_id=actor.user.id,
+                action="campaign.update",
+                resource_type="campaign",
+                resource_id=campaign.id,
+                after_state={"changed_fields": sorted(values.keys())},
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            return refreshed
+
+    async def get_campaign_preflight(
+        self,
+        *,
+        actor: CurrentActor,
+        campaign_id: str,
+    ) -> CampaignPreflightResult:
+        self._require_admin(actor)
+        async with self._session_factory() as session:
+            repo = CampaignRepository(session)
+            campaign = await repo.get_campaign_by_id(campaign_id)
+            if campaign is None:
+                raise NotFoundError("Campaign not found")
+
+            checks: list[CampaignPreflightCheck] = []
+
+            sender_profile = await repo.get_sender_profile_by_id(campaign.sender_profile_id)
+            if sender_profile is None:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="sender_profile",
+                        label="Sender profile",
+                        severity="critical",
+                        detail="Sender profile is missing",
+                    )
+                )
+            elif not sender_profile.is_active:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="sender_profile",
+                        label="Sender profile",
+                        severity="critical",
+                        detail="Sender profile is paused",
+                    )
+                )
+            else:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="sender_profile",
+                        label="Sender profile",
+                        severity="ok",
+                        detail="Sender profile is active",
+                    )
+                )
+
+            domain = (
+                await repo.get_domain_by_id(sender_profile.domain_id)
+                if sender_profile is not None
+                else None
+            )
+            if domain is None:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="domain",
+                        label="Domain health",
+                        severity="critical",
+                        detail="Domain is missing",
+                    )
+                )
+            elif domain.verification_status != "verified":
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="domain",
+                        label="Domain health",
+                        severity="critical",
+                        detail="Domain is not verified",
+                    )
+                )
+            elif domain.reputation_status in {"burnt", "retired"}:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="domain",
+                        label="Domain health",
+                        severity="critical",
+                        detail=f"Domain reputation is {domain.reputation_status}",
+                    )
+                )
+            elif domain.reputation_status == "cooling":
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="domain",
+                        label="Domain health",
+                        severity="warning",
+                        detail="Domain is in cooling state",
+                    )
+                )
+            else:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="domain",
+                        label="Domain health",
+                        severity="ok",
+                        detail="Domain is sendable",
+                    )
+                )
+
+            template_version = await repo.get_template_version_by_id(campaign.template_version_id)
+            checks.append(
+                CampaignPreflightCheck(
+                    id="template",
+                    label="Template version",
+                    severity="ok" if template_version is not None else "critical",
+                    detail=(
+                        "Template version exists"
+                        if template_version is not None
+                        else "Template version is missing"
+                    ),
+                )
+            )
+
+            if campaign.segment_id is None and campaign.list_id is None:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="audience",
+                        label="Audience",
+                        severity="critical",
+                        detail="Campaign has no audience configured",
+                    )
+                )
+            else:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="audience",
+                        label="Audience",
+                        severity="ok",
+                        detail=(
+                            "Segment-based audience configured"
+                            if campaign.segment_id is not None
+                            else "List-based audience configured"
+                        ),
+                    )
+                )
+
+            if campaign.schedule_type == "scheduled" and campaign.scheduled_at is None:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="schedule",
+                        label="Schedule",
+                        severity="critical",
+                        detail="Scheduled campaign is missing scheduled_at",
+                    )
+                )
+            else:
+                checks.append(
+                    CampaignPreflightCheck(
+                        id="schedule",
+                        label="Schedule",
+                        severity="ok",
+                        detail="Schedule configuration is valid",
+                    )
+                )
+
+            if campaign.segment_id is not None:
+                try:
+                    preview = await self._segment_service.preview_segment(
+                        actor=actor,
+                        segment_id=campaign.segment_id,
+                        sample_limit=1,
+                    )
+                    checks.append(
+                        CampaignPreflightCheck(
+                            id="segment_size",
+                            label="Segment size",
+                            severity="warning" if preview.total_count == 0 else "ok",
+                            detail=f"{preview.total_count} eligible contact(s) in preview",
+                        )
+                    )
+                except Exception:
+                    checks.append(
+                        CampaignPreflightCheck(
+                            id="segment_size",
+                            label="Segment size",
+                            severity="warning",
+                            detail="Segment preview unavailable",
+                        )
+                    )
+
+        return CampaignPreflightResult(
+            campaign_id=campaign_id,
+            checks=checks,
+            generated_at=datetime.now(UTC),
+        )
+
+    async def list_campaign_messages(
+        self,
+        *,
+        actor: CurrentActor,
+        campaign_id: str,
+        limit: int,
+        cursor: str | None,
+        status: str | None = None,
+    ) -> CursorPage[Message]:
+        self._require_admin(actor)
+        async with self._session_factory() as session:
+            repo = CampaignRepository(session)
+            campaign = await repo.get_campaign_by_id(campaign_id)
+            if campaign is None:
+                raise NotFoundError("Campaign not found")
+            rows = await repo.list_messages_for_campaign(
+                campaign_id=campaign_id,
+                limit=limit,
+                cursor=cursor,
+                status=status,
+            )
+
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        next_cursor = encode_cursor(page[-1].created_at, page[-1].id) if has_more and page else None
+        return CursorPage(items=page, next_cursor=next_cursor)
+
+    async def requeue_campaign_message(
+        self,
+        *,
+        actor: CurrentActor,
+        campaign_id: str,
+        message_id: str,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> Message:
+        self._require_admin(actor)
+        queued_message_id: str | None = None
+        domain_id: str | None = None
+        domain_name: str | None = None
+
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = CampaignRepository(uow.require_session())
+            campaign = await repo.get_campaign_by_id(campaign_id)
+            if campaign is None:
+                raise NotFoundError("Campaign not found")
+
+            source_message = await repo.get_message_by_id(message_id)
+            if source_message is None or source_message.campaign_id != campaign_id:
+                raise NotFoundError("Message not found")
+            if source_message.status not in {"failed", "paused"}:
+                raise ConflictError("Only failed or paused messages can be re-queued")
+
+            requeued = Message(
+                campaign_id=source_message.campaign_id,
+                send_batch_id=source_message.send_batch_id,
+                contact_id=source_message.contact_id,
+                sender_profile_id=source_message.sender_profile_id,
+                domain_id=source_message.domain_id,
+                to_email=source_message.to_email,
+                from_email=source_message.from_email,
+                subject=source_message.subject,
+                status="queued",
+                headers={
+                    **dict(source_message.headers or {}),
+                    "requeued_from_message_id": source_message.id,
+                },
+            )
+            uow.require_session().add(requeued)
+            await uow.require_session().flush()
+            queued_message_id = requeued.id
+            domain_id = requeued.domain_id
+
+            domain = await repo.get_domain_by_id(requeued.domain_id)
+            domain_name = domain.name if domain is not None else None
+
+            await AuthRepository(uow.require_session()).write_audit_log(
+                actor_type=actor.actor_type,
+                actor_id=actor.user.id,
+                action="campaign.message.requeue",
+                resource_type="message",
+                resource_id=requeued.id,
+                after_state={
+                    "campaign_id": campaign_id,
+                    "source_message_id": source_message.id,
+                    "status": "queued",
+                },
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+
+        if queued_message_id is None:
+            raise RuntimeError("Failed to create re-queued message")
+
+        if domain_id and domain_name:
+            try:
+                from apps.workers.celery_app import celery_app
+
+                celery_app.send_task(
+                    "send.send_message",
+                    kwargs={
+                        "message_id": queued_message_id,
+                        "domain_id": domain_id,
+                        "domain_name": domain_name,
+                    },
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                logger.warning(
+                    "campaigns.requeue_enqueue_failed",
+                    campaign_id=campaign_id,
+                    message_id=queued_message_id,
+                    error=str(exc),
+                )
+
+        async with self._session_factory() as session:
+            repo = CampaignRepository(session)
+            refreshed = await repo.get_message_by_id(queued_message_id)
+            if refreshed is None:
+                raise NotFoundError("Message not found")
+            return refreshed
 
     async def launch_campaign(
         self,
@@ -444,29 +969,6 @@ class CampaignService:
                         domain_name=domain.name,
                     )
 
-            domain_rate_limit_per_hour = self._resolve_domain_rate_limit_per_hour(
-                domain.rate_limit_per_hour
-            )
-            if self._settings.app_env != "test":
-                throttle = await self._token_bucket.try_take(
-                    domain_id=domain.id,
-                    capacity_per_hour=domain_rate_limit_per_hour,
-                    requested_tokens=1,
-                )
-                if not throttle.allowed:
-                    retry_after = max(throttle.retry_after_seconds, 1)
-                    return MessageSendResult(
-                        message_id=message.id,
-                        status="queued",
-                        error_code="rate_limited_domain",
-                        error_message=(
-                            "Domain hourly send limit reached; message re-queued for retry"
-                        ),
-                        retry_after_seconds=retry_after,
-                        domain_id=domain.id,
-                        domain_name=domain.name,
-                    )
-
             claimed = await repo.claim_message_for_sending(message.id)
             if not claimed:
                 refreshed = await repo.get_message_by_id(message.id)
@@ -636,6 +1138,101 @@ class CampaignService:
             await repo.increment_campaign_total_sent(campaign.id)
 
             return self._result_from_message(message)
+
+    async def get_send_message_dispatch_context(
+        self,
+        *,
+        message_id: str,
+    ) -> SendMessageDispatchContext | None:
+        async with self._session_factory() as session:
+            repo = CampaignRepository(session)
+            context = await repo.get_message_dispatch_context(message_id)
+            if context is None:
+                return None
+            return SendMessageDispatchContext(
+                message_id=context.message_id,
+                status=context.status,
+                error_code=context.error_code,
+                domain_id=context.domain_id,
+                domain_name=context.domain_name,
+                domain_rate_limit_per_hour=self._resolve_domain_rate_limit_per_hour(
+                    context.domain_rate_limit_per_hour
+                ),
+            )
+
+    async def _resolve_template_version_id(
+        self,
+        *,
+        repo: CampaignRepository,
+        template_version_id: str | None,
+        template_id: str | None,
+        template_version: int | None,
+        fallback_template_version_id: str | None = None,
+    ) -> str:
+        if template_version_id:
+            version = await repo.get_template_version_by_id(template_version_id)
+            if version is None:
+                raise NotFoundError("Template version not found")
+            return version.id
+
+        if template_id and template_version is not None:
+            version = await repo.get_template_version_by_template_and_number(
+                template_id=template_id,
+                version_number=template_version,
+            )
+            if version is None:
+                raise NotFoundError("Template version not found")
+            return version.id
+
+        if fallback_template_version_id is not None:
+            return fallback_template_version_id
+
+        raise ValidationError(
+            "Provide template_version_id or template_id with template_version"
+        )
+
+    @staticmethod
+    def _resolve_audience_ids(
+        *,
+        segment_id: str | None,
+        list_id: str | None,
+        audience_type: str | None,
+        audience_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        resolved_segment_id = segment_id
+        resolved_list_id = list_id
+
+        if audience_type is not None or audience_id is not None:
+            if audience_type not in {"segment", "list"}:
+                raise ValidationError("audience_type must be either 'segment' or 'list'")
+            if not audience_id:
+                raise ValidationError("audience_id is required when audience_type is set")
+            if audience_type == "segment":
+                resolved_segment_id = audience_id
+                resolved_list_id = None
+            else:
+                resolved_segment_id = None
+                resolved_list_id = audience_id
+
+        if resolved_segment_id and resolved_list_id:
+            raise ValidationError("Campaign audience must reference either a segment or a list")
+        if not resolved_segment_id and not resolved_list_id:
+            raise ValidationError("Campaign audience is required")
+        return resolved_segment_id, resolved_list_id
+
+    @staticmethod
+    def _resolve_schedule(
+        *,
+        schedule_type: str,
+        scheduled_at: datetime | None,
+    ) -> tuple[str, datetime | None]:
+        if schedule_type not in {"immediate", "scheduled"}:
+            raise ValidationError("schedule_type must be immediate or scheduled")
+        if schedule_type == "scheduled" and scheduled_at is None:
+            raise ValidationError("scheduled_at is required when schedule_type is scheduled")
+        if schedule_type == "immediate":
+            return "immediate", None
+        return "scheduled", scheduled_at
 
     async def _ensure_campaign_run(
         self,
@@ -864,7 +1461,7 @@ class CampaignService:
     def _build_list_unsubscribe_headers(self, *, contact_id: str) -> list[tuple[str, str]]:
         token = self._unsubscribe_serializer.dumps({"contact_id": contact_id})
         base_url = self._settings.public_unsubscribe_base_url.rstrip("/")
-        unsubscribe_url = f"{base_url}/u/{token}"
+        unsubscribe_url = f"{base_url}/unsubscribe?t={token}"
         return [
             ("List-Unsubscribe", f"<{unsubscribe_url}>"),
             ("List-Unsubscribe-Post", "List-Unsubscribe=One-Click"),

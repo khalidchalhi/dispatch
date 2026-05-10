@@ -95,3 +95,8 @@ class SuppressionSesSyncSummary(BaseModel):
     pulled_count: int
     scanned_remote_count: int
     error_count: int
+
+
+class SuppressionRevealResponse(BaseModel):
+    id: str
+    email: str

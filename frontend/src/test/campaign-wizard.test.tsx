@@ -9,6 +9,11 @@ import { StepSchedule } from "@/app/(dashboard)/campaigns/create/_components/ste
 import { StepReview } from "@/app/(dashboard)/campaigns/create/_components/step-review";
 import { EMPTY_DRAFT, WIZARD_STEPS, isDraftStepComplete } from "@/types/campaign";
 import type { CampaignDraft } from "@/types/campaign";
+import { senderProfiles } from "@/app/(dashboard)/sender-profiles/_lib/sender-profiles-queries";
+import { mockTemplates, getVersionsForTemplate } from "@/app/(dashboard)/templates/_lib/templates-queries";
+import { mockSegments } from "@/app/(dashboard)/segments/_lib/segments-queries";
+import { lists } from "@/app/(dashboard)/lists/_lib/lists-queries";
+import type { WizardTemplate } from "@/app/(dashboard)/campaigns/create/_lib/wizard-types";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
@@ -17,7 +22,35 @@ vi.mock("next/navigation", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/lib/api/client", () => ({
-  clientJson: vi.fn().mockResolvedValue({ id: "cmp-new" }),
+  clientJson: vi.fn(async (path: string) => {
+    if (path.includes("/preflight")) {
+      return {
+        campaign_id: "cmp-new",
+        checks: [
+          {
+            id: "sender_profile",
+            label: "Sender profile",
+            severity: "ok",
+            detail: "Sender profile is active",
+          },
+        ],
+        has_critical: false,
+        generated_at: "2026-01-01T00:00:00Z",
+      };
+    }
+    if (path.includes("/launch")) {
+      return {
+        campaign: { id: "cmp-new" },
+        campaign_run_id: "run-1",
+        run_number: 1,
+        snapshot_rows: 1,
+        created_messages: 1,
+        enqueued_messages: 1,
+        already_launched: false,
+      };
+    }
+    return { id: "cmp-new" };
+  }),
 }));
 
 const localStorageMock = (() => {
@@ -32,6 +65,7 @@ const localStorageMock = (() => {
 Object.defineProperty(window, "localStorage", { value: localStorageMock });
 
 const filledDraft: CampaignDraft = {
+  campaignId: null,
   name: "Test campaign",
   tag: "test-tag",
   senderProfileId: "sp-001",
@@ -42,6 +76,18 @@ const filledDraft: CampaignDraft = {
   scheduleType: "immediate",
   scheduledAt: "",
   timezone: "UTC",
+};
+
+const wizardTemplates: WizardTemplate[] = mockTemplates.map((template) => ({
+  ...template,
+  versions: getVersionsForTemplate(template.id),
+}));
+
+const wizardData = {
+  senderProfiles,
+  templates: wizardTemplates,
+  segments: mockSegments,
+  lists,
 };
 
 // ─── isDraftStepComplete ──────────────────────────────────────────────────────
@@ -95,18 +141,18 @@ describe("CampaignWizard", () => {
   beforeEach(() => localStorageMock.clear());
 
   it("renders step 1 (Details) first with wizard nav", () => {
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     expect(screen.getByText("1. Details")).toBeInTheDocument();
     expect(screen.getByLabelText(/campaign name/i)).toBeInTheDocument();
   });
 
   it("Continue is disabled on Details step when name is empty", () => {
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
   });
 
   it("Continue becomes enabled when name is filled", () => {
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     fireEvent.change(screen.getByLabelText(/campaign name/i), {
       target: { value: "My campaign" },
     });
@@ -114,7 +160,7 @@ describe("CampaignWizard", () => {
   });
 
   it("advancing to step 2 shows Sender step", async () => {
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     fireEvent.change(screen.getByLabelText(/campaign name/i), {
       target: { value: "Test" },
     });
@@ -123,7 +169,7 @@ describe("CampaignWizard", () => {
   });
 
   it("Back button on step 2 returns to step 1", async () => {
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     fireEvent.change(screen.getByLabelText(/campaign name/i), {
       target: { value: "Test" },
     });
@@ -133,7 +179,7 @@ describe("CampaignWizard", () => {
   });
 
   it("persists draft to localStorage on change", () => {
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     fireEvent.change(screen.getByLabelText(/campaign name/i), {
       target: { value: "Draft name" },
     });
@@ -143,7 +189,7 @@ describe("CampaignWizard", () => {
 
   it("loads existing draft from localStorage on mount", () => {
     localStorageMock.setItem("dispatch:campaign-draft", JSON.stringify({ ...EMPTY_DRAFT, name: "Restored" }));
-    render(<CampaignWizard />);
+    render(<CampaignWizard {...wizardData} />);
     expect((screen.getByLabelText(/campaign name/i) as HTMLInputElement).value).toBe("Restored");
   });
 });
@@ -179,7 +225,13 @@ describe("StepDetails", () => {
 // ─── StepSender ───────────────────────────────────────────────────────────────
 
 describe("StepSender", () => {
-  const base = { draft: { ...EMPTY_DRAFT }, onChange: vi.fn(), onBack: vi.fn(), onNext: vi.fn() };
+  const base = {
+    draft: { ...EMPTY_DRAFT },
+    senderProfiles,
+    onChange: vi.fn(),
+    onBack: vi.fn(),
+    onNext: vi.fn(),
+  };
 
   it("shows radio cards for active sender profiles", () => {
     render(<StepSender {...base} />);
@@ -195,7 +247,13 @@ describe("StepSender", () => {
 // ─── StepTemplate ─────────────────────────────────────────────────────────────
 
 describe("StepTemplate", () => {
-  const base = { draft: { ...EMPTY_DRAFT }, onChange: vi.fn(), onBack: vi.fn(), onNext: vi.fn() };
+  const base = {
+    draft: { ...EMPTY_DRAFT },
+    templates: wizardTemplates,
+    onChange: vi.fn(),
+    onBack: vi.fn(),
+    onNext: vi.fn(),
+  };
 
   it("shows template select", () => {
     render(<StepTemplate {...base} />);
@@ -211,7 +269,14 @@ describe("StepTemplate", () => {
 // ─── StepAudience ────────────────────────────────────────────────────────────
 
 describe("StepAudience", () => {
-  const base = { draft: { ...EMPTY_DRAFT }, onChange: vi.fn(), onBack: vi.fn(), onNext: vi.fn() };
+  const base = {
+    draft: { ...EMPTY_DRAFT },
+    segments: mockSegments,
+    lists,
+    onChange: vi.fn(),
+    onBack: vi.fn(),
+    onNext: vi.fn(),
+  };
 
   it("renders segment and list radio options", () => {
     render(<StepAudience {...base} />);
@@ -264,6 +329,11 @@ describe("StepSchedule", () => {
 describe("StepReview", () => {
   const base = {
     draft: filledDraft,
+    senderProfiles,
+    templates: wizardTemplates,
+    segments: mockSegments,
+    lists,
+    onChange: vi.fn(),
     onBack: vi.fn(),
     onGoToStep: vi.fn(),
     onLaunchSuccess: vi.fn(),
@@ -281,23 +351,36 @@ describe("StepReview", () => {
 
   it("Launch campaign button is enabled when no critical checks", () => {
     render(<StepReview {...base} />);
-    expect(screen.getByRole("button", { name: /launch campaign/i })).not.toBeDisabled();
+    return waitFor(() => {
+      expect(screen.getByRole("button", { name: /launch campaign/i })).not.toBeDisabled();
+    });
   });
 
   it("clicking Launch opens confirm dialog", () => {
     render(<StepReview {...base} />);
-    fireEvent.click(screen.getByRole("button", { name: /launch campaign/i }));
-    expect(screen.getByRole("heading", { name: /confirm launch/i })).toBeInTheDocument();
+    return waitFor(() => {
+      const button = screen.getByRole("button", { name: /launch campaign/i });
+      expect(button).not.toBeDisabled();
+      fireEvent.click(button);
+      expect(screen.getByRole("heading", { name: /confirm launch/i })).toBeInTheDocument();
+    });
   });
 
   it("Confirm launch button disabled until campaign name is typed", () => {
     render(<StepReview {...base} />);
-    fireEvent.click(screen.getByRole("button", { name: /launch campaign/i }));
-    expect(screen.getByRole("button", { name: /confirm launch/i })).toBeDisabled();
+    return waitFor(() => {
+      const button = screen.getByRole("button", { name: /launch campaign/i });
+      expect(button).not.toBeDisabled();
+      fireEvent.click(button);
+      expect(screen.getByRole("button", { name: /confirm launch/i })).toBeDisabled();
+    });
   });
 
   it("Confirm launch enabled after typing exact campaign name", async () => {
     render(<StepReview {...base} />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /launch campaign/i })).not.toBeDisabled();
+    });
     fireEvent.click(screen.getByRole("button", { name: /launch campaign/i }));
     fireEvent.change(screen.getByLabelText(/type the campaign name/i), {
       target: { value: "Test campaign" },
@@ -323,10 +406,10 @@ describe("StepReview", () => {
   });
 
   it("launches campaign and calls onLaunchSuccess on success", async () => {
-    const { clientJson } = await import("@/lib/api/client");
-    vi.mocked(clientJson).mockResolvedValueOnce({ id: "cmp-new" });
-
     render(<StepReview {...base} />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /launch campaign/i })).not.toBeDisabled();
+    });
     fireEvent.click(screen.getByRole("button", { name: /launch campaign/i }));
     fireEvent.change(screen.getByLabelText(/type the campaign name/i), {
       target: { value: "Test campaign" },

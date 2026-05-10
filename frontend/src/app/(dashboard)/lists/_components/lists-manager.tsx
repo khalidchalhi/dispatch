@@ -25,6 +25,7 @@ import { clientJson } from "@/lib/api/client";
 import { apiEndpoints } from "@/lib/api/endpoints";
 import { formatTimestamp } from "@/lib/formatters";
 import type { List } from "@/types/list";
+import { toList, type ApiListResponse } from "../_lib/lists-api";
 
 type ListsManagerProps = {
   initialLists: List[];
@@ -53,12 +54,12 @@ export function ListsManager({ initialLists }: ListsManagerProps) {
     }
     setIsPending(true);
     try {
-      const created = await clientJson<List>(apiEndpoints.lists.create, {
+      const created = await clientJson<ApiListResponse>(apiEndpoints.lists.create, {
         method: "POST",
         body: { name: trimmedName, description: description.trim() || null },
       });
       toast.success("List created.");
-      setLists((prev) => [...prev, created]);
+      setLists((prev) => [...prev, toList(created)]);
       setCreateOpen(false);
       resetForm();
       router.refresh();

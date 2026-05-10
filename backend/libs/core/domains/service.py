@@ -5,8 +5,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
+from typing import Literal
 from uuid import uuid4
 
+from sqlalchemy import select
+
+from libs.core.auth.models import AuditLog
 from libs.core.auth.repository import AuthRepository
 from libs.core.auth.schemas import CurrentActor
 from libs.core.config import Settings, get_settings
@@ -15,6 +19,7 @@ from libs.core.db.uow import UnitOfWork
 from libs.core.domains.models import Domain, DomainDnsRecord, IPPool, SESConfigurationSet
 from libs.core.domains.provisioning import (
     Boto3SesDomainProvisioner,
+    DomainProvisioningFailureReason,
     DomainProvisioningStatus,
     ProvisioningStep,
     SesDomainProvisioner,
@@ -79,6 +84,26 @@ class DomainProvisionEnqueueResult:
     domain_id: str
     run_id: str
     status: str
+
+
+@dataclass(slots=True, frozen=True)
+class DomainProvisioningAuditEntry:
+    id: str
+    domain_id: str
+    domain_name: str
+    provider: str
+    status: str
+    reason_code: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    steps: list[ProvisioningStep]
+
+
+@dataclass(slots=True, frozen=True)
+class DomainZone:
+    id: str
+    name: str
+    provider: Literal["cloudflare", "route53"]
 
 
 class DomainService:
@@ -301,6 +326,110 @@ class DomainService:
             if domain is None:
                 raise NotFoundError("Domain not found")
             return self._provisioning_status_from_domain(domain)
+
+    async def list_zones_for_provider(
+        self,
+        *,
+        actor: CurrentActor,
+        provider: str,
+    ) -> list[DomainZone]:
+        self._require_admin(actor)
+        normalized_provider = provider.strip().lower()
+        if normalized_provider == "cloudflare":
+            provisioner: DNSProvisioner = CloudflareDNSProvisioner(
+                self._settings,
+                secret_provider=self._dns_secret_provider,
+            )
+        elif normalized_provider == "route53":
+            provisioner = Route53DNSProvisioner(self._settings)
+        else:
+            raise ValidationError("provider must be one of: cloudflare, route53")
+
+        zones = await provisioner.list_zones()
+        return [
+            DomainZone(
+                id=zone.id,
+                name=zone.name,
+                provider=normalized_provider,
+            )
+            for zone in zones
+        ]
+
+    async def list_provisioning_audit(
+        self,
+        *,
+        actor: CurrentActor,
+        limit: int = 50,
+    ) -> list[DomainProvisioningAuditEntry]:
+        self._require_admin(actor)
+        bounded_limit = max(1, min(limit, 200))
+
+        async with self._session_factory() as session:
+            logs_result = await session.execute(
+                select(AuditLog)
+                .where(AuditLog.resource_type == "domain")
+                .where(
+                    AuditLog.action.in_(
+                        [
+                            "domain.provision.enqueue",
+                            "domain.provision.success",
+                            "domain.provision.failed",
+                        ]
+                    )
+                )
+                .order_by(AuditLog.occurred_at.desc(), AuditLog.id.desc())
+                .limit(bounded_limit * 6)
+            )
+            logs = list(logs_result.scalars().all())
+            domain_ids = sorted(
+                {
+                    str(log.resource_id)
+                    for log in logs
+                    if log.resource_id
+                }
+            )
+
+            domains_by_id: dict[str, Domain] = {}
+            if domain_ids:
+                domains_result = await session.execute(
+                    select(Domain).where(Domain.id.in_(domain_ids))
+                )
+                domains = list(domains_result.scalars().all())
+                domains_by_id = {domain.id: domain for domain in domains}
+
+            seen_run_ids: set[str] = set()
+            attempts: list[DomainProvisioningAuditEntry] = []
+            for log in logs:
+                domain_id = str(log.resource_id) if log.resource_id else ""
+                if not domain_id:
+                    continue
+                after_state = log.after_state if isinstance(log.after_state, dict) else None
+                status_payload = DomainProvisioningStatus.from_metadata(
+                    domain_id=domain_id,
+                    payload=after_state,
+                )
+                run_id = status_payload.run_id or f"audit-{log.id}"
+                if run_id in seen_run_ids:
+                    continue
+                seen_run_ids.add(run_id)
+
+                domain = domains_by_id.get(domain_id)
+                attempts.append(
+                    DomainProvisioningAuditEntry(
+                        id=run_id,
+                        domain_id=domain_id,
+                        domain_name=domain.name if domain else domain_id,
+                        provider=domain.dns_provider if domain else "manual",
+                        status=status_payload.status,
+                        reason_code=status_payload.reason_code,
+                        started_at=status_payload.started_at,
+                        completed_at=status_payload.completed_at,
+                        steps=status_payload.steps,
+                    )
+                )
+                if len(attempts) >= bounded_limit:
+                    break
+            return attempts
 
     async def provision_domain_system(
         self,
@@ -828,20 +957,47 @@ class DomainService:
         zone_id: str,
         records: list[DomainDnsRecord],
     ) -> None:
-        async with UnitOfWork(self._session_factory) as uow:
-            repo = DomainRepository(uow.require_session())
-            for record in records:
-                input_record = DNSRecordInput(
+        provider_ids_by_record_signature: dict[tuple[str, str], str] = {}
+        if isinstance(dns_provisioner, Route53DNSProvisioner) and records:
+            batch_inputs = [
+                DNSRecordInput(
                     record_type=record.record_type,
                     name=record.name,
                     value=record.value,
                     ttl=300,
                     priority=record.priority,
                 )
-                provider_record_id = await dns_provisioner.create_record(
-                    zone_id=zone_id,
-                    record=input_record,
-                )
+                for record in records
+            ]
+            batch_provider_ids = await dns_provisioner.upsert_records(
+                zone_id=zone_id,
+                records=batch_inputs,
+            )
+            provider_ids_by_record_signature = {
+                (
+                    input_record.record_type.upper(),
+                    normalize_dns_value(input_record.name),
+                ): batch_provider_ids[Route53DNSProvisioner._record_id(input_record)]
+                for input_record in batch_inputs
+            }
+
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = DomainRepository(uow.require_session())
+            for record in records:
+                signature = (record.record_type.upper(), normalize_dns_value(record.name))
+                provider_record_id = provider_ids_by_record_signature.get(signature)
+                if provider_record_id is None:
+                    input_record = DNSRecordInput(
+                        record_type=record.record_type,
+                        name=record.name,
+                        value=record.value,
+                        ttl=300,
+                        priority=record.priority,
+                    )
+                    provider_record_id = await dns_provisioner.create_record(
+                        zone_id=zone_id,
+                        record=input_record,
+                    )
                 await repo.update_dns_record(
                     record_id=record.id,
                     values={"provider_record_id": provider_record_id},
@@ -992,13 +1148,16 @@ class DomainService:
         run_id: str,
         exc: Exception,
     ) -> DomainProvisioningStatus:
-        reason_code = getattr(exc, "code", "domain_provisioning_failed")
         message = str(exc) or "Domain provisioning failed"
         async with UnitOfWork(self._session_factory) as uow:
             repo = DomainRepository(uow.require_session())
             domain = await repo.get_domain_by_id(domain_id)
             if domain is None:
                 raise NotFoundError("Domain not found") from exc
+            reason_code = self._resolve_provisioning_failure_reason(
+                domain=domain,
+                error=exc,
+            )
 
             step = ProvisioningStep(
                 name="failed",
@@ -1031,6 +1190,44 @@ class DomainService:
                 error=message,
             )
             return failed_status
+
+    @staticmethod
+    def _resolve_provisioning_failure_reason(*, domain: Domain, error: Exception) -> str:
+        explicit_code = getattr(error, "code", None)
+        if isinstance(explicit_code, str) and explicit_code.strip():
+            if explicit_code != DomainProvisioningFailureReason.EXTERNAL_SERVICE_ERROR.value:
+                return explicit_code
+
+        last_running_step = DomainService._last_running_provisioning_step(domain)
+        if last_running_step == "create_ses_identity":
+            return DomainProvisioningFailureReason.SES_IDENTITY_SETUP_FAILED.value
+        if last_running_step == "ensure_configuration_set":
+            return DomainProvisioningFailureReason.SES_CONFIGURATION_SET_FAILED.value
+        if last_running_step == "configure_mail_from":
+            return DomainProvisioningFailureReason.SES_MAIL_FROM_FAILED.value
+        if last_running_step == "sync_dns_records":
+            return DomainProvisioningFailureReason.DNS_RECORD_SYNC_FAILED.value
+        if last_running_step == "apply_dns_records":
+            return DomainProvisioningFailureReason.DNS_RECORD_APPLY_FAILED.value
+        if last_running_step == "poll_ses_verification":
+            lowered = str(error).lower()
+            if "timed out" in lowered or "timeout" in lowered:
+                return DomainProvisioningFailureReason.SES_VERIFICATION_TIMEOUT.value
+            return DomainProvisioningFailureReason.SES_VERIFICATION_FAILED.value
+        if last_running_step == "verify_dns_state":
+            return DomainProvisioningFailureReason.DNS_VERIFICATION_FAILED.value
+
+        if isinstance(explicit_code, str) and explicit_code.strip():
+            return explicit_code
+        return DomainProvisioningFailureReason.DOMAIN_PROVISIONING_FAILED.value
+
+    @staticmethod
+    def _last_running_provisioning_step(domain: Domain) -> str | None:
+        status = DomainService._provisioning_status_from_domain(domain)
+        for step in reversed(status.steps):
+            if step.status == "running":
+                return step.name
+        return None
 
     async def _cleanup_remote_resources(self, *, domain: Domain, repo: DomainRepository) -> None:
         if domain.dns_provider in {"cloudflare", "route53"}:

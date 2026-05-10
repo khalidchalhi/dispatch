@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from typing import Any
 
 import psycopg
 from psycopg.types.json import Json
@@ -15,23 +16,28 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from libs.core.config import get_settings  # noqa: E402
+from libs.core.domains.provisioning import Boto3SesDomainProvisioner  # noqa: E402
+from libs.dns_provisioner.base import (  # noqa: E402
+    AwsSecretsManagerSecretProvider,
+    DNSProvisioner,
+    DNSZone,
+)
+from libs.dns_provisioner.cloudflare import CloudflareDNSProvisioner  # noqa: E402
+from libs.dns_provisioner.route53 import Route53DNSProvisioner  # noqa: E402
 
 
 @dataclass(frozen=True, slots=True)
 class RetireDomainResult:
     domain_id: str
     domain_name: str
-    dns_records_deactivated: int
-    sender_profiles_paused: int
-    queued_messages_paused: int
-    campaigns_paused: int
-    campaign_runs_paused: int
+    dns_records_removed: int
+    ses_identity_deleted: bool
     reason: str
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Retire a sending domain and stop all sends on it."
+        description="Retire a sending domain and remove DNS + SES identity."
     )
     parser.add_argument(
         "--domain",
@@ -60,7 +66,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    domain_name = args.domain.strip().lower().rstrip(".")
+    domain_name = _normalize_domain_name(args.domain)
     reason = args.reason.strip()
     if not domain_name:
         raise SystemExit("`--domain` must not be empty.")
@@ -77,11 +83,8 @@ def main() -> int:
 
     print(
         f"Retired domain {result.domain_name} ({result.domain_id}); "
-        f"dns_records_deactivated={result.dns_records_deactivated}; "
-        f"sender_profiles_paused={result.sender_profiles_paused}; "
-        f"queued_messages_paused={result.queued_messages_paused}; "
-        f"campaigns_paused={result.campaigns_paused}; "
-        f"campaign_runs_paused={result.campaign_runs_paused}; "
+        f"dns_records_removed={result.dns_records_removed}; "
+        f"ses_identity_deleted={result.ses_identity_deleted}; "
         f"reason={result.reason}"
     )
     return 0
@@ -104,7 +107,7 @@ def retire_domain(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id::text, name, reputation_status, verification_status
+                SELECT id::text, name, dns_provider, metadata
                 FROM domains
                 WHERE lower(name) = lower(%s)
                 FOR UPDATE
@@ -117,8 +120,41 @@ def retire_domain(
 
             domain_id = str(domain_row[0])
             found_name = str(domain_row[1])
-            reputation_before = str(domain_row[2])
-            verification_before = str(domain_row[3])
+            dns_provider = str(domain_row[2])
+            metadata_json = domain_row[3] if isinstance(domain_row[3], dict) else {}
+
+            cursor.execute(
+                """
+                SELECT provider_record_id
+                FROM domain_dns_records
+                WHERE domain_id = %s
+                  AND is_active = TRUE
+                  AND provider_record_id IS NOT NULL
+                ORDER BY created_at ASC
+                """,
+                (domain_id,),
+            )
+            provider_record_ids = [str(row[0]) for row in cursor.fetchall() if row and row[0]]
+
+            dns_records_removed = asyncio.run(
+                _remove_dns_records(
+                    provider=dns_provider,
+                    domain_name=found_name,
+                    metadata_json=metadata_json,
+                    provider_record_ids=provider_record_ids,
+                )
+            )
+            ses_identity_deleted = asyncio.run(_delete_ses_identity(domain_name=found_name))
+
+            cursor.execute(
+                """
+                UPDATE domain_dns_records
+                SET is_active = FALSE
+                WHERE domain_id = %s
+                  AND is_active = TRUE
+                """,
+                (domain_id,),
+            )
 
             cursor.execute(
                 """
@@ -133,141 +169,13 @@ def retire_domain(
                 (now, reason, now, domain_id),
             )
 
-            cursor.execute(
-                """
-                UPDATE domain_dns_records
-                SET is_active = FALSE
-                WHERE domain_id = %s
-                  AND is_active = TRUE
-                """,
-                (domain_id,),
-            )
-            dns_records_deactivated = int(cursor.rowcount or 0)
-
-            pause_reason = f"domain_retired:{reason}"[:2000]
-            cursor.execute(
-                """
-                UPDATE sender_profiles
-                SET is_active = FALSE,
-                    paused_at = COALESCE(paused_at, %s),
-                    paused_reason = COALESCE(paused_reason, %s),
-                    updated_at = %s
-                WHERE domain_id = %s
-                  AND is_active = TRUE
-                """,
-                (now, pause_reason, now, domain_id),
-            )
-            sender_profiles_paused = int(cursor.rowcount or 0)
-
-            cursor.execute(
-                """
-                UPDATE messages
-                SET status = 'paused',
-                    error_code = 'domain_retired',
-                    error_message = %s
-                WHERE domain_id = %s
-                  AND status = 'queued'
-                """,
-                (f"Domain retired: {reason}"[:4000], domain_id),
-            )
-            queued_messages_paused = int(cursor.rowcount or 0)
-
-            cursor.execute(
-                """
-                WITH updated_campaigns AS (
-                    UPDATE campaigns c
-                    SET status = 'paused',
-                        updated_at = %s
-                    FROM sender_profiles sp
-                    WHERE c.sender_profile_id = sp.id
-                      AND sp.domain_id = %s
-                      AND c.status = 'running'
-                    RETURNING c.id
-                ),
-                updated_runs AS (
-                    UPDATE campaign_runs
-                    SET status = 'paused'
-                    WHERE status = 'running'
-                      AND campaign_id IN (SELECT id FROM updated_campaigns)
-                    RETURNING id
-                )
-                SELECT
-                    (SELECT COUNT(*) FROM updated_campaigns),
-                    (SELECT COUNT(*) FROM updated_runs)
-                """,
-                (now, domain_id),
-            )
-            campaign_counts = cursor.fetchone()
-            campaigns_paused = int(campaign_counts[0] if campaign_counts is not None else 0)
-            campaign_runs_paused = int(campaign_counts[1] if campaign_counts is not None else 0)
-
-            cursor.execute(
-                """
-                SELECT id::text, state
-                FROM circuit_breaker_state
-                WHERE scope_type = 'domain'
-                  AND scope_id = %s
-                FOR UPDATE
-                """,
-                (domain_id,),
-            )
-            state_row = cursor.fetchone()
-            if state_row is None:
-                cursor.execute(
-                    """
-                    INSERT INTO circuit_breaker_state (
-                        id,
-                        scope_type,
-                        scope_id,
-                        state,
-                        bounce_rate_24h,
-                        complaint_rate_24h,
-                        tripped_at,
-                        tripped_reason,
-                        auto_reset_at,
-                        manually_reset_by,
-                        updated_at
-                    )
-                    VALUES (%s, 'domain', %s, 'open', NULL, NULL, %s, %s, NULL, %s, %s)
-                    """,
-                    (
-                        str(uuid4()),
-                        domain_id,
-                        now,
-                        "domain_retired",
-                        actor_id,
-                        now,
-                    ),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE circuit_breaker_state
-                    SET state = 'open',
-                        tripped_at = %s,
-                        tripped_reason = 'domain_retired',
-                        auto_reset_at = NULL,
-                        manually_reset_by = %s,
-                        updated_at = %s
-                    WHERE id = %s
-                    """,
-                    (now, actor_id, now, str(state_row[0])),
-                )
-
-            before_state = {
-                "reputation_status": reputation_before,
-                "verification_status": verification_before,
-            }
             after_state = {
                 "reputation_status": "retired",
                 "verification_status": "disabled",
                 "reason": reason,
                 "retired_at": now.isoformat(),
-                "dns_records_deactivated": dns_records_deactivated,
-                "sender_profiles_paused": sender_profiles_paused,
-                "queued_messages_paused": queued_messages_paused,
-                "campaigns_paused": campaigns_paused,
-                "campaign_runs_paused": campaign_runs_paused,
+                "dns_records_removed": dns_records_removed,
+                "ses_identity_deleted": ses_identity_deleted,
             }
             cursor.execute(
                 """
@@ -277,12 +185,11 @@ def retire_domain(
                     action,
                     resource_type,
                     resource_id,
-                    before_state,
                     after_state,
                     ip_address,
                     user_agent
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     actor_type,
@@ -290,7 +197,6 @@ def retire_domain(
                     "domain.retire",
                     "domain",
                     domain_id,
-                    Json(before_state),
                     Json(after_state),
                     ip_address,
                     user_agent,
@@ -300,13 +206,105 @@ def retire_domain(
     return RetireDomainResult(
         domain_id=domain_id,
         domain_name=found_name,
-        dns_records_deactivated=dns_records_deactivated,
-        sender_profiles_paused=sender_profiles_paused,
-        queued_messages_paused=queued_messages_paused,
-        campaigns_paused=campaigns_paused,
-        campaign_runs_paused=campaign_runs_paused,
+        dns_records_removed=dns_records_removed,
+        ses_identity_deleted=ses_identity_deleted,
         reason=reason,
     )
+
+
+async def _delete_ses_identity(*, domain_name: str) -> bool:
+    ses = Boto3SesDomainProvisioner(get_settings())
+    try:
+        await ses.delete_identity(domain_name=domain_name)
+    except Exception:
+        return False
+    return True
+
+
+async def _remove_dns_records(
+    *,
+    provider: str,
+    domain_name: str,
+    metadata_json: dict[str, Any],
+    provider_record_ids: list[str],
+) -> int:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider not in {"cloudflare", "route53"}:
+        return 0
+    if not provider_record_ids:
+        return 0
+
+    provisioner = _build_dns_provisioner(normalized_provider)
+    zone_id = await _resolve_zone_id(
+        provider=normalized_provider,
+        domain_name=domain_name,
+        metadata_json=metadata_json,
+        provisioner=provisioner,
+    )
+    if not zone_id:
+        return 0
+
+    removed = 0
+    for record_id in provider_record_ids:
+        try:
+            await provisioner.delete_record(zone_id=zone_id, record_id=record_id)
+            removed += 1
+        except Exception:
+            continue
+    return removed
+
+
+def _build_dns_provisioner(provider: str) -> DNSProvisioner:
+    settings = get_settings()
+    if provider == "cloudflare":
+        return CloudflareDNSProvisioner(
+            settings,
+            secret_provider=AwsSecretsManagerSecretProvider(settings),
+        )
+    return Route53DNSProvisioner(settings)
+
+
+async def _resolve_zone_id(
+    *,
+    provider: str,
+    domain_name: str,
+    metadata_json: dict[str, Any],
+    provisioner: DNSProvisioner,
+) -> str | None:
+    if provider == "cloudflare":
+        explicit = metadata_json.get("cloudflare_zone_id")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+    if provider == "route53":
+        explicit = metadata_json.get("route53_hosted_zone_id")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+        default_zone = get_settings().route53_default_hosted_zone_id
+        if default_zone and default_zone.strip():
+            return default_zone.strip()
+
+    zones = await provisioner.list_zones()
+    return _find_best_zone_id(domain_name=domain_name, zones=zones)
+
+
+def _find_best_zone_id(*, domain_name: str, zones: list[DNSZone]) -> str | None:
+    normalized_domain = _normalize_domain_name(domain_name)
+    if not normalized_domain:
+        return None
+
+    exact = [zone for zone in zones if zone.name == normalized_domain]
+    if exact:
+        return exact[0].id
+
+    suffix_matches = [zone for zone in zones if normalized_domain.endswith(zone.name)]
+    if not suffix_matches:
+        return None
+    suffix_matches.sort(key=lambda zone: len(zone.name), reverse=True)
+    return suffix_matches[0].id
+
+
+def _normalize_domain_name(value: str) -> str:
+    return value.strip().lower().rstrip(".")
 
 
 if __name__ == "__main__":

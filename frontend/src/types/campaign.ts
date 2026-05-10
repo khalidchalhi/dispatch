@@ -90,6 +90,7 @@ export type MessagesPage = {
 };
 
 export type CampaignDraft = {
+  campaignId: string | null;
   name: string;
   tag: string;
   senderProfileId: string;
@@ -112,6 +113,7 @@ export type PreflightCheck = {
 };
 
 export const EMPTY_DRAFT: CampaignDraft = {
+  campaignId: null,
   name: "",
   tag: "",
   senderProfileId: "",

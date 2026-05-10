@@ -11,7 +11,7 @@ from libs.core.campaigns.service import get_campaign_service, reset_campaign_ser
 from libs.core.db.uow import UnitOfWork
 from libs.core.domains.models import Domain
 from libs.core.sender_profiles.models import SenderProfile
-from libs.core.throttle.token_bucket import DomainTokenBucket
+from libs.core.throttle.token_bucket import DomainTokenBucket, get_domain_token_bucket
 from libs.core.warmup.repository import WarmupRepository
 from libs.core.warmup.service import WarmupService, reset_warmup_service_cache
 
@@ -118,6 +118,37 @@ async def test_warming_domain_day3_cap_enforced_by_token_bucket(
 
 
 @pytest.mark.asyncio
+async def test_compute_daily_budgets_writes_redis_override_for_daily_cap(
+    auth_test_context: AuthTestContext,
+) -> None:
+    schedule = [5]
+    now = datetime.now(UTC)
+    domain = await _seed_warming_domain(
+        auth_test_context,
+        warmup_schedule=schedule,
+        warmup_started_at=now,
+        daily_send_limit=999,  # stale DB value should be ignored by Redis override
+    )
+
+    service = WarmupService(auth_test_context.settings)
+    bucket = get_domain_token_bucket()
+    bucket.reset_daily_counters()
+    await service.compute_daily_budgets()
+
+    allowed = 0
+    denied = 0
+    for _ in range(8):
+        decision = await bucket.try_take_daily(domain_id=domain.id, daily_limit=999)
+        if decision.allowed:
+            allowed += 1
+        else:
+            denied += 1
+
+    assert allowed == 5
+    assert denied == 3
+
+
+@pytest.mark.asyncio
 async def test_graduation_marks_domain_after_schedule(
     auth_test_context: AuthTestContext,
 ) -> None:
@@ -133,7 +164,9 @@ async def test_graduation_marks_domain_after_schedule(
     )
 
     service = WarmupService(auth_test_context.settings)
-    result = await service.check_graduation()
+    result = {"graduated": 0}
+    for _ in range(GRADUATION_CLEAN_DAYS):
+        result = await service.check_graduation()
 
     assert result["graduated"] >= 1
 

@@ -39,7 +39,8 @@ class CircuitBreakerRepository:
         tripped_reason: str | None,
         tripped_at: datetime | None,
         auto_reset_at: datetime | None,
-        manually_reset_by: str | None,
+        reset_by: str | None,
+        reset_at: datetime | None,
     ) -> CircuitBreakerState:
         normalized_scope_id = str(scope_id).strip()
         row = await self.get_state(scope_type=scope_type, scope_id=normalized_scope_id)
@@ -54,7 +55,8 @@ class CircuitBreakerRepository:
                 tripped_reason=tripped_reason,
                 tripped_at=tripped_at,
                 auto_reset_at=auto_reset_at,
-                manually_reset_by=manually_reset_by,
+                reset_by=reset_by,
+                reset_at=reset_at,
                 updated_at=now,
             )
             self.session.add(row)
@@ -67,10 +69,19 @@ class CircuitBreakerRepository:
         row.tripped_reason = tripped_reason
         row.tripped_at = tripped_at
         row.auto_reset_at = auto_reset_at
-        row.manually_reset_by = manually_reset_by
+        row.reset_by = reset_by
+        row.reset_at = reset_at
         row.updated_at = now
         await self.session.flush()
         return row
+
+    async def list_states(self) -> list[CircuitBreakerState]:
+        stmt = select(CircuitBreakerState).order_by(
+            CircuitBreakerState.scope_type.asc(),
+            CircuitBreakerState.scope_id.asc(),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def get_rolling_metric_24h(
         self,
@@ -115,7 +126,11 @@ class CircuitBreakerRepository:
 
     async def list_scope_ids(self, *, scope_type: str) -> list[str]:
         if scope_type == "domain":
-            stmt = select(Domain.id).where(Domain.verification_status == "verified")
+            stmt = (
+                select(Domain.id)
+                .where(Domain.verification_status == "verified")
+                .where(Domain.reputation_status.notin_(["retired", "burnt"]))
+            )
             result = await self.session.execute(stmt)
             return [str(item) for item in result.scalars().all()]
 
@@ -131,5 +146,39 @@ class CircuitBreakerRepository:
 
         if scope_type == "account":
             return [_ACCOUNT_SCOPE_ID]
+
+        return []
+
+    async def list_scope_entities(self, *, scope_type: str) -> list[tuple[str, str]]:
+        if scope_type == "domain":
+            stmt = (
+                select(Domain.id, Domain.name)
+                .where(Domain.verification_status == "verified")
+                .where(Domain.reputation_status.notin_(["retired", "burnt"]))
+                .order_by(Domain.name.asc())
+            )
+            result = await self.session.execute(stmt)
+            return [(str(row[0]), str(row[1])) for row in result.all()]
+
+        if scope_type == "sender_profile":
+            stmt = (
+                select(SenderProfile.id, SenderProfile.from_email)
+                .where(SenderProfile.is_active.is_(True))
+                .order_by(SenderProfile.from_email.asc())
+            )
+            result = await self.session.execute(stmt)
+            return [(str(row[0]), str(row[1])) for row in result.all()]
+
+        if scope_type == "ip_pool":
+            stmt = (
+                select(IPPool.id, IPPool.name)
+                .where(IPPool.is_active.is_(True))
+                .order_by(IPPool.name.asc())
+            )
+            result = await self.session.execute(stmt)
+            return [(str(row[0]), str(row[1])) for row in result.all()]
+
+        if scope_type == "account":
+            return [(_ACCOUNT_SCOPE_ID, "Platform account")]
 
         return []

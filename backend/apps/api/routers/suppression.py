@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
+import io
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from apps.api.deps import get_current_actor, get_suppression_service_dep, require_admin
 from libs.core.auth.models import User
@@ -15,6 +18,7 @@ from libs.core.suppression.schemas import (
     SuppressionEntryResponse,
     SuppressionListResponse,
     SuppressionQueryParams,
+    SuppressionRevealResponse,
     SuppressionReasonCode,
 )
 from libs.core.suppression.service import SuppressionService
@@ -53,6 +57,47 @@ async def list_suppressions(
         limit=result.limit,
         offset=result.offset,
     )
+
+
+@router.post("/export")
+async def export_suppressions(
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    service: Annotated[SuppressionService, Depends(get_suppression_service_dep)],
+    reason_code: SuppressionReasonCode | None = None,
+) -> StreamingResponse:
+    entries = await service.list_export_entries(actor=actor, reason_code=reason_code)
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(["email", "reason_code", "source", "first_suppressed_at", "expires_at"])
+    for entry in entries:
+        writer.writerow(
+            [
+                entry.email,
+                service.to_reason_code(entry),
+                service.to_source(entry),
+                entry.created_at.isoformat(),
+                entry.expires_at.isoformat() if entry.expires_at is not None else "",
+            ]
+        )
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="suppression-export.csv"'},
+    )
+
+
+@router.get("/{entry_id}/reveal", response_model=SuppressionRevealResponse)
+@router.post("/{entry_id}/reveal", response_model=SuppressionRevealResponse)
+async def reveal_suppression_email(
+    entry_id: str,
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    service: Annotated[SuppressionService, Depends(get_suppression_service_dep)],
+) -> SuppressionRevealResponse:
+    entry = await service.get_suppression_by_id(actor=actor, entry_id=entry_id)
+    return SuppressionRevealResponse(id=entry.id, email=entry.email)
 
 
 @router.get("/{email}", response_model=SuppressionEntryResponse)

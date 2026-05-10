@@ -1,11 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { serverJson } from "@/lib/api/server";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
+import { ApiError } from "@/lib/api/errors";
 import { TemplateWorkspace } from "../_components/template-workspace";
 import {
-  getTemplateById,
-  getVersionsForTemplate,
-  mockMergeTags,
-} from "../_lib/templates-queries";
+  toMergeTag,
+  toTemplate,
+  toTemplateVersion,
+  type ApiMergeTagResponse,
+  type ApiTemplateResponse,
+} from "../_lib/templates-api";
 
 type TemplateDetailPageProps = {
   params: Promise<{ templateId: string }>;
@@ -16,10 +21,25 @@ export default async function TemplateDetailPage({
 }: TemplateDetailPageProps) {
   const { templateId } = await params;
 
-  const template = getTemplateById(templateId);
-  if (!template) notFound();
+  let templateResponse: ApiTemplateResponse;
+  try {
+    templateResponse = await serverJson<ApiTemplateResponse>(
+      ENDPOINTS.templates.byId(templateId),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      notFound();
+    }
+    throw error;
+  }
 
-  const versions = getVersionsForTemplate(templateId);
+  const mergeTagsResponse = await serverJson<ApiMergeTagResponse[]>(
+    ENDPOINTS.templates.mergeTags,
+  );
+
+  const template = toTemplate(templateResponse);
+  const versions = templateResponse.versions.map(toTemplateVersion);
+  const mergeTags = mergeTagsResponse.map(toMergeTag);
 
   return (
     <div className="page-stack">
@@ -46,7 +66,7 @@ export default async function TemplateDetailPage({
       <TemplateWorkspace
         template={template}
         versions={versions}
-        mergeTags={mockMergeTags}
+        mergeTags={mergeTags}
       />
     </div>
   );

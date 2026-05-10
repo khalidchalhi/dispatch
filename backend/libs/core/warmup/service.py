@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
 from libs.core.config import Settings, get_settings
@@ -11,6 +11,7 @@ from libs.core.db.uow import UnitOfWork
 from libs.core.domains.models import Domain
 from libs.core.errors import NotFoundError
 from libs.core.logging import get_logger
+from libs.core.throttle.token_bucket import get_domain_token_bucket
 from libs.core.warmup.repository import WarmupRepository
 from libs.core.warmup.schemas import (
     GRADUATION_CLEAN_DAYS,
@@ -42,6 +43,27 @@ class GraduationResult:
     extended_days: int
 
 
+@dataclass(slots=True, frozen=True)
+class WarmupDayStatus:
+    day: int
+    cap: int
+    actual_sends: int | None
+
+
+@dataclass(slots=True, frozen=True)
+class WarmupDomainStatus:
+    domain_id: str
+    warmup_stage: str
+    current_day: int
+    total_days: int
+    today_cap: int
+    today_sends: int
+    scheduled_graduation_at: datetime | None
+    graduated_at: datetime | None
+    warmup_completed_at: datetime | None
+    schedule: list[WarmupDayStatus]
+
+
 class WarmupService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -67,6 +89,8 @@ class WarmupService:
             domain = await repo.get_domain(domain_id=domain_id)
             if domain is None:
                 raise NotFoundError(f"Domain {domain_id} not found")
+            metadata = self._domain_metadata(domain)
+            metadata["warmup_clean_streak"] = 0
 
             await repo.update_domain_warmup(
                 domain_id=domain_id,
@@ -76,6 +100,7 @@ class WarmupService:
                     "warmup_started_at": now,
                     "warmup_completed_at": None,
                     "daily_send_limit": first_budget,
+                    "metadata_json": metadata,
                 },
             )
             refreshed = await repo.get_domain(domain_id=domain_id)
@@ -93,6 +118,7 @@ class WarmupService:
     async def compute_daily_budgets(self) -> dict[str, object]:
         """Nightly task: update daily_send_limit for every warming domain."""
         updated: list[DailyBudgetResult] = []
+        token_bucket = get_domain_token_bucket()
 
         async with UnitOfWork(self._session_factory) as uow:
             repo = WarmupRepository(uow.require_session())
@@ -109,6 +135,10 @@ class WarmupService:
                 await repo.update_domain_warmup(
                     domain_id=domain.id,
                     values={"daily_send_limit": budget},
+                )
+                await token_bucket.set_daily_warmup_limit(
+                    domain_id=domain.id,
+                    daily_limit=budget,
                 )
                 updated.append(
                     DailyBudgetResult(
@@ -143,6 +173,8 @@ class WarmupService:
 
                 schedule = self._schedule_from_domain(domain)
                 day = WarmupRepository.warmup_day_number(domain.warmup_started_at)
+                metadata = self._domain_metadata(domain)
+                clean_streak = int(metadata.get("warmup_clean_streak", 0) or 0)
 
                 metric = await repo.get_24h_rolling_metric(domain_id=domain.id)
                 bounce_rate = float(metric.bounce_rate) if metric and metric.bounce_rate else 0.0
@@ -156,13 +188,18 @@ class WarmupService:
                 )
 
                 if not health_ok:
+                    clean_streak = 0
                     new_days = len(schedule.volumes) + WARMUP_EXTENSION_DAYS
                     extended_volumes = list(schedule.volumes) + [
                         schedule.volumes[-1]
                     ] * WARMUP_EXTENSION_DAYS
+                    metadata["warmup_clean_streak"] = clean_streak
                     await repo.update_domain_warmup(
                         domain_id=domain.id,
-                        values={"warmup_schedule": extended_volumes},
+                        values={
+                            "warmup_schedule": extended_volumes,
+                            "metadata_json": metadata,
+                        },
                     )
                     logger.warning(
                         "warmup.extended",
@@ -183,13 +220,16 @@ class WarmupService:
                     )
                     continue
 
-                if day >= schedule.total_days() + GRADUATION_CLEAN_DAYS:
+                clean_streak += 1
+                metadata["warmup_clean_streak"] = clean_streak
+                if day >= schedule.total_days() and clean_streak >= GRADUATION_CLEAN_DAYS:
                     await repo.update_domain_warmup(
                         domain_id=domain.id,
                         values={
                             "warmup_stage": "graduated",
                             "warmup_completed_at": datetime.now(UTC),
                             "daily_send_limit": 0,
+                            "metadata_json": metadata,
                         },
                     )
                     logger.info(
@@ -207,6 +247,12 @@ class WarmupService:
                             extended_days=0,
                         )
                     )
+                    continue
+
+                await repo.update_domain_warmup(
+                    domain_id=domain.id,
+                    values={"metadata_json": metadata},
+                )
 
         graduated = sum(1 for r in results if r.graduated)
         extended = sum(1 for r in results if r.extended)
@@ -214,6 +260,49 @@ class WarmupService:
             "graduated": graduated,
             "extended": extended,
         }
+
+    async def get_warmup_status(self, *, domain_id: str) -> WarmupDomainStatus:
+        async with self._session_factory() as session:
+            repo = WarmupRepository(session)
+            domain = await repo.get_domain(domain_id=domain_id)
+            if domain is None:
+                raise NotFoundError(f"Domain {domain_id} not found")
+            schedule = self._schedule_from_domain(domain)
+            today_sends = await repo.count_sent_today(domain_id=domain.id)
+
+            if domain.warmup_started_at is None:
+                current_day = 0
+            else:
+                current_day = WarmupRepository.warmup_day_number(domain.warmup_started_at)
+
+            day_rows: list[WarmupDayStatus] = []
+            for idx, cap in enumerate(schedule.volumes, start=1):
+                day_rows.append(
+                    WarmupDayStatus(
+                        day=idx,
+                        cap=cap,
+                        actual_sends=today_sends if idx == current_day else None,
+                    )
+                )
+
+            scheduled_graduation_at = (
+                domain.warmup_started_at + timedelta(days=schedule.total_days())
+                if domain.warmup_started_at is not None
+                else None
+            )
+
+            return WarmupDomainStatus(
+                domain_id=domain.id,
+                warmup_stage=domain.warmup_stage,
+                current_day=current_day,
+                total_days=schedule.total_days(),
+                today_cap=schedule.budget_for_day(current_day),
+                today_sends=today_sends,
+                scheduled_graduation_at=scheduled_graduation_at,
+                graduated_at=domain.warmup_completed_at if domain.warmup_stage == "graduated" else None,
+                warmup_completed_at=domain.warmup_completed_at,
+                schedule=day_rows,
+            )
 
     async def extend_warmup(self, *, domain_id: str, extra_days: int) -> Domain:
         """Manually extend a warming domain's schedule."""
@@ -254,6 +343,10 @@ class WarmupService:
         if not volumes:
             return default_warmup_schedule()
         return custom_warmup_schedule([int(v) for v in volumes])
+
+    @staticmethod
+    def _domain_metadata(domain: Domain) -> dict[str, object]:
+        return dict(domain.metadata_json or {})
 
 
 @lru_cache(maxsize=1)

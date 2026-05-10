@@ -11,6 +11,7 @@ import { ProgressStep } from "./_components/progress-step";
 import { ReviewStep } from "./_components/review-step";
 import { UploadStep } from "./_components/upload-step";
 import type { ParsedFile } from "./_components/upload-step";
+import type { ApiImportJobResponse } from "./_lib/import-api";
 import type { ColumnMapping } from "@/types/import";
 import type { ImportJob } from "@/types/import";
 
@@ -92,7 +93,7 @@ export default function ContactImportPage() {
       const formData = new FormData();
       formData.append("file", parsed.file);
       formData.append("mapping", JSON.stringify(finalMapping));
-      const job = await clientJson<ImportJob>(apiEndpoints.contacts.bulkImport, {
+      const job = await clientJson<ApiImportJobResponse>(apiEndpoints.contacts.bulkImport, {
         method: "POST",
         body: formData,
       });

@@ -12,6 +12,7 @@ from libs.core.auth.models import User
 from libs.core.auth.schemas import CurrentActor
 from libs.core.auth.service import AuthService, UserService, get_auth_service
 from libs.core.campaigns.service import CampaignService, get_campaign_service
+from libs.core.circuit_breaker.service import CircuitBreakerService, get_circuit_breaker_service
 from libs.core.config import Settings, get_settings
 from libs.core.contacts.service import ContactService, get_contact_service
 from libs.core.db.session import get_session
@@ -23,6 +24,7 @@ from libs.core.segments.service import SegmentService, get_segment_service
 from libs.core.sender_profiles.service import SenderProfileService, get_sender_profile_service
 from libs.core.suppression.service import SuppressionService, get_suppression_service
 from libs.core.templates.service import TemplateService, get_template_service
+from libs.core.warmup.service import WarmupService, get_warmup_service
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -66,6 +68,10 @@ def get_campaign_service_dep() -> CampaignService:
     return get_campaign_service()
 
 
+def get_circuit_breaker_service_dep() -> CircuitBreakerService:
+    return get_circuit_breaker_service()
+
+
 def get_list_service_dep() -> ListService:
     return get_list_service()
 
@@ -84,6 +90,10 @@ def get_segment_service_dep() -> SegmentService:
 
 def get_suppression_service_dep() -> SuppressionService:
     return get_suppression_service()
+
+
+def get_warmup_service_dep() -> WarmupService:
+    return get_warmup_service()
 
 
 async def get_current_actor(

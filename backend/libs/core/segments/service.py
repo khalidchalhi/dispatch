@@ -198,6 +198,41 @@ class SegmentService:
                 user_agent=user_agent,
             )
 
+    async def duplicate_segment(
+        self,
+        *,
+        actor: CurrentActor,
+        segment_id: str,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> SegmentRecord:
+        self._require_admin(actor)
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = SegmentRepository(uow.require_session())
+            segment = await repo.get_segment_by_id(segment_id)
+            if segment is None:
+                raise NotFoundError("Segment not found")
+            description, is_deleted = self._decode_deleted_description(segment.description)
+            if is_deleted:
+                raise NotFoundError("Segment not found")
+
+            duplicated = await repo.create_segment(
+                name=f"{segment.name} (Copy)",
+                description=description,
+                definition=dict(segment.definition),
+            )
+            await AuthRepository(uow.require_session()).write_audit_log(
+                actor_type=actor.actor_type,
+                actor_id=actor.user.id,
+                action="segment.duplicate",
+                resource_type="segment",
+                resource_id=duplicated.id,
+                after_state={"source_segment_id": segment.id, "name": duplicated.name},
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            return SegmentRecord(segment=duplicated, description=description)
+
     async def preview_segment(
         self,
         *,

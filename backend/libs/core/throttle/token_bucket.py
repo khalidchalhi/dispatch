@@ -4,6 +4,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Protocol, cast
 
@@ -98,6 +99,17 @@ class TokenBucketMetricEvent:
     source: str
 
 
+@dataclass(frozen=True, slots=True)
+class TokenBucketMetricSnapshot:
+    domain_id: str
+    tokens_available: int | None
+    denials_last_minute: int
+    denial_rate_per_minute: float
+    total_allowed: int
+    total_denied: int
+    updated_at: datetime | None
+
+
 class TokenBucketMetricsRecorder(Protocol):
     def record(
         self,
@@ -146,6 +158,94 @@ class InMemoryTokenBucketMetricsRecorder:
             )
         )
 
+    def snapshot(self, domain_id: str) -> TokenBucketMetricSnapshot:
+        cleaned = domain_id.strip()
+        relevant = [event for event in self.events if event.domain_id == cleaned]
+        if not relevant:
+            return TokenBucketMetricSnapshot(
+                domain_id=cleaned,
+                tokens_available=None,
+                denials_last_minute=0,
+                denial_rate_per_minute=0.0,
+                total_allowed=0,
+                total_denied=0,
+                updated_at=None,
+            )
+
+        total_allowed = sum(1 for event in relevant if event.allowed)
+        total_denied = len(relevant) - total_allowed
+        return TokenBucketMetricSnapshot(
+            domain_id=cleaned,
+            tokens_available=relevant[-1].tokens_remaining,
+            denials_last_minute=total_denied,
+            denial_rate_per_minute=float(total_denied),
+            total_allowed=total_allowed,
+            total_denied=total_denied,
+            updated_at=datetime.now(UTC),
+        )
+
+
+@dataclass(slots=True)
+class TokenBucketMetricsStore(TokenBucketMetricsRecorder):
+    _events_by_domain: dict[str, list[tuple[float, bool]]] = field(default_factory=dict)
+    _last_tokens: dict[str, int | None] = field(default_factory=dict)
+    _totals_allowed: dict[str, int] = field(default_factory=dict)
+    _totals_denied: dict[str, int] = field(default_factory=dict)
+    _updated_at: dict[str, datetime] = field(default_factory=dict)
+    _window_seconds: int = 60
+
+    def __init__(self, *, window_seconds: int = 60) -> None:
+        self._events_by_domain = {}
+        self._last_tokens = {}
+        self._totals_allowed = {}
+        self._totals_denied = {}
+        self._updated_at = {}
+        self._window_seconds = max(window_seconds, 1)
+
+    def record(
+        self,
+        *,
+        domain_id: str,
+        allowed: bool,
+        retry_after_seconds: int,
+        tokens_remaining: int | None,
+        source: str,
+    ) -> None:
+        _ = (retry_after_seconds, source)
+        now_ts = time.time()
+        cleaned = domain_id.strip()
+        if not cleaned:
+            return
+        events = self._events_by_domain.setdefault(cleaned, [])
+        events.append((now_ts, allowed))
+        cutoff = now_ts - self._window_seconds
+        self._events_by_domain[cleaned] = [
+            event for event in events if event[0] >= cutoff
+        ]
+        self._last_tokens[cleaned] = tokens_remaining
+        if allowed:
+            self._totals_allowed[cleaned] = self._totals_allowed.get(cleaned, 0) + 1
+        else:
+            self._totals_denied[cleaned] = self._totals_denied.get(cleaned, 0) + 1
+        self._updated_at[cleaned] = datetime.now(UTC)
+
+    def snapshot(self, domain_id: str) -> TokenBucketMetricSnapshot:
+        cleaned = domain_id.strip()
+        events = self._events_by_domain.get(cleaned, [])
+        cutoff = time.time() - self._window_seconds
+        events = [event for event in events if event[0] >= cutoff]
+        self._events_by_domain[cleaned] = events
+        denials = sum(1 for _, allowed in events if not allowed)
+        return TokenBucketMetricSnapshot(
+            domain_id=cleaned,
+            tokens_available=self._last_tokens.get(cleaned),
+            denials_last_minute=denials,
+            denial_rate_per_minute=float(denials),
+            total_allowed=self._totals_allowed.get(cleaned, 0),
+            total_denied=self._totals_denied.get(cleaned, 0),
+            updated_at=self._updated_at.get(cleaned),
+        )
+
 
 @dataclass(slots=True)
 class _FallbackBucketState:
@@ -157,6 +257,10 @@ class _RedisTokenBucketClient(Protocol):
     async def script_load(self, script: str) -> str: ...
 
     async def evalsha(self, sha: str, numkeys: int, *keys_and_args: object) -> object: ...
+
+    async def get(self, name: str) -> object: ...
+
+    async def set(self, name: str, value: object, ex: int | None = None) -> object: ...
 
 
 class DomainTokenBucket:
@@ -173,12 +277,13 @@ class DomainTokenBucket:
             _RedisTokenBucketClient,
             redis_async.from_url(settings.redis_url, decode_responses=True),  # type: ignore[no-untyped-call]
         )
-        self._metrics = metrics or NoopTokenBucketMetricsRecorder()
+        self._metrics = metrics or get_token_bucket_metrics_store()
         self._now_seconds = now_seconds or time.time
         self._script_sha: str | None = None
         self._daily_cap_sha: str | None = None
         self._fallback_buckets: dict[str, _FallbackBucketState] = {}
         self._fallback_daily_counters: dict[str, int] = {}
+        self._fallback_warmup_daily_limits: dict[str, int] = {}
 
     async def try_take(
         self,
@@ -257,19 +362,22 @@ class DomainTokenBucket:
         expires automatically at the configured TTL (one day) so it resets each day.
         Only called for domains in warmup_stage='warming'.
         """
-        if daily_limit <= 0:
-            return DailyCapDecision(allowed=True, tokens_remaining=None)
-
         normalized = domain_id.strip().lower()
         if not normalized:
             return DailyCapDecision(allowed=False, tokens_remaining=None)
+        effective_limit = await self.resolve_daily_limit(
+            domain_id=normalized,
+            fallback_limit=daily_limit,
+        )
+        if effective_limit <= 0:
+            return DailyCapDecision(allowed=True, tokens_remaining=None)
 
         if self._settings.app_env == "test":
-            return self._try_take_daily_fallback(domain_id=normalized, daily_limit=daily_limit)
+            return self._try_take_daily_fallback(domain_id=normalized, daily_limit=effective_limit)
 
         try:
             return await self._try_take_daily_redis(
-                domain_id=normalized, daily_limit=daily_limit
+                domain_id=normalized, daily_limit=effective_limit
             )
         except Exception as exc:
             logger.warning(
@@ -278,6 +386,56 @@ class DomainTokenBucket:
                 error=str(exc),
             )
             return DailyCapDecision(allowed=False, tokens_remaining=None)
+
+    async def set_daily_warmup_limit(
+        self,
+        *,
+        domain_id: str,
+        daily_limit: int,
+    ) -> None:
+        normalized = domain_id.strip().lower()
+        if not normalized:
+            return
+        limit = max(int(daily_limit), 0)
+        key = self._warmup_daily_limit_key(normalized)
+        if self._settings.app_env == "test":
+            self._fallback_warmup_daily_limits[key] = limit
+            return
+
+        ttl_seconds = max(self._seconds_until_next_midnight_utc() + 3600, 3600)
+        await self._redis_client.set(key, str(limit), ex=ttl_seconds)
+
+    async def resolve_daily_limit(
+        self,
+        *,
+        domain_id: str,
+        fallback_limit: int,
+    ) -> int:
+        normalized = domain_id.strip().lower()
+        if not normalized:
+            return max(int(fallback_limit), 0)
+        key = self._warmup_daily_limit_key(normalized)
+
+        if self._settings.app_env == "test":
+            override = self._fallback_warmup_daily_limits.get(key)
+            return max(int(override), 0) if override is not None else max(int(fallback_limit), 0)
+
+        try:
+            raw = await self._redis_client.get(key)
+        except Exception as exc:
+            logger.warning(
+                "throttle.warmup_limit_resolve_failed",
+                domain_id=normalized,
+                error=str(exc),
+            )
+            return max(int(fallback_limit), 0)
+
+        if raw is None:
+            return max(int(fallback_limit), 0)
+        try:
+            return max(int(raw), 0)
+        except (TypeError, ValueError):
+            return max(int(fallback_limit), 0)
 
     def _try_take_daily_fallback(
         self, *, domain_id: str, daily_limit: int
@@ -312,10 +470,23 @@ class DomainTokenBucket:
     def reset_daily_counters(self) -> None:
         """Test helper to clear all in-memory daily counters."""
         self._fallback_daily_counters.clear()
+        self._fallback_warmup_daily_limits.clear()
 
     @staticmethod
     def queue_key_for_domain(domain_id: str) -> str:
         return f"throttle:domain:{domain_id.strip().lower()}"
+
+    @staticmethod
+    def _warmup_daily_limit_key(domain_id: str) -> str:
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        return f"throttle:warmup:daily_limit:{domain_id.strip().lower()}:{today}"
+
+    @staticmethod
+    def _seconds_until_next_midnight_utc() -> int:
+        now = datetime.now(UTC)
+        next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        next_midnight = next_midnight + timedelta(days=1)
+        return max(int((next_midnight - now).total_seconds()), 1)
 
     async def _try_take_redis(
         self,
@@ -414,3 +585,12 @@ def get_domain_token_bucket() -> DomainTokenBucket:
 
 def reset_domain_token_bucket_cache() -> None:
     get_domain_token_bucket.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def get_token_bucket_metrics_store() -> TokenBucketMetricsStore:
+    return TokenBucketMetricsStore()
+
+
+def reset_token_bucket_metrics_store() -> None:
+    get_token_bucket_metrics_store.cache_clear()

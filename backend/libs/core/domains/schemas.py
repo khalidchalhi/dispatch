@@ -18,6 +18,7 @@ DomainVerificationStatus = Literal[
 ]
 DnsRecordVerificationStatus = Literal["pending", "verified", "failed"]
 DomainReputationStatus = Literal["warming", "healthy", "cooling", "burnt", "retired"]
+DomainWarmupStage = Literal["none", "warming", "graduated"]
 
 
 class DnsRecordType(StrEnum):
@@ -45,6 +46,10 @@ class DomainProvisionRequest(BaseModel):
 
 class DomainRetireRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
+
+
+class DomainWarmupExtendRequest(BaseModel):
+    days: int = Field(ge=1, le=180)
 
 
 class DomainDnsRecordResponse(BaseModel):
@@ -171,6 +176,56 @@ class DomainProvisionEnqueueResponse(BaseModel):
     domain_id: str
     run_id: str
     status: str
+
+
+class DomainZoneResponse(BaseModel):
+    id: str
+    name: str
+    provider: Literal["cloudflare", "route53"]
+
+
+class DomainZoneListResponse(BaseModel):
+    items: list[DomainZoneResponse]
+
+
+class DomainProvisioningAuditItemResponse(BaseModel):
+    id: str
+    domain_id: str
+    domain_name: str
+    provider: DomainProvider
+    status: str
+    reason_code: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    steps: list[DomainProvisioningStepResponse] = Field(default_factory=list)
+
+
+class DomainProvisioningAuditListResponse(BaseModel):
+    items: list[DomainProvisioningAuditItemResponse]
+
+
+class DomainWarmupDayResponse(BaseModel):
+    day: int
+    cap: int
+    actual_sends: int | None = None
+
+
+class DomainWarmupScheduleResponse(BaseModel):
+    total_days: int
+    days: list[DomainWarmupDayResponse] = Field(default_factory=list)
+
+
+class DomainWarmupStatusResponse(BaseModel):
+    domain_id: str
+    warmup_stage: DomainWarmupStage
+    current_day: int
+    total_days: int
+    today_cap: int
+    today_sends: int
+    scheduled_graduation_at: datetime | None = None
+    graduated_at: datetime | None = None
+    warmup_completed_at: datetime | None = None
+    schedule: DomainWarmupScheduleResponse
 
 
 class SESConfigurationSetCreateRequest(BaseModel):

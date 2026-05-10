@@ -197,6 +197,45 @@ class SuppressionService:
                 raise NotFoundError("Suppression entry not found")
             return entry
 
+    async def get_suppression_by_id(
+        self,
+        *,
+        actor: CurrentActor,
+        entry_id: str,
+    ) -> SuppressionEntry:
+        self._require_admin(actor)
+        async with self._session_factory() as session:
+            repo = SuppressionRepository(session)
+            entry = await repo.get_by_id(entry_id)
+            if entry is None:
+                raise NotFoundError("Suppression entry not found")
+            return entry
+
+    async def list_export_entries(
+        self,
+        *,
+        actor: CurrentActor,
+        reason_code: SuppressionReasonCode | None = None,
+    ) -> list[SuppressionEntry]:
+        self._require_admin(actor)
+        stored_reason = (
+            _CANONICAL_TO_STORED_REASON[reason_code] if reason_code is not None else None
+        )
+        page_size = 500
+        offset = 0
+        items: list[SuppressionEntry] = []
+        async with self._session_factory() as session:
+            repo = SuppressionRepository(session)
+            while True:
+                page = await repo.list_active_entries(limit=page_size, offset=offset)
+                if stored_reason is not None:
+                    page = [entry for entry in page if entry.reason == stored_reason]
+                if not page:
+                    break
+                items.extend(page)
+                offset += len(page)
+        return items
+
     async def add_suppression(
         self,
         *,

@@ -1,7 +1,12 @@
 import { SegmentsManager } from "./_components/segments-manager";
-import { mockSegments } from "./_lib/segments-queries";
+import { serverJson } from "@/lib/api/server";
+import { apiEndpoints as ENDPOINTS } from "@/lib/api/endpoints";
+import { toSegment, type ApiSegmentsListResponse } from "./_lib/segments-api";
 
-export default function SegmentsPage() {
+export default async function SegmentsPage() {
+  const response = await serverJson<ApiSegmentsListResponse>(ENDPOINTS.segments.list);
+  const segments = response.items.map(toSegment);
+
   return (
     <div className="page-stack">
       <header className="page-intro">
@@ -14,7 +19,7 @@ export default function SegmentsPage() {
         </div>
       </header>
 
-      <SegmentsManager initialSegments={mockSegments} />
+      <SegmentsManager initialSegments={segments} />
     </div>
   );
 }

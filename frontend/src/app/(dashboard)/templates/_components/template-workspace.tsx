@@ -8,6 +8,7 @@ import { TemplateEditor } from "./template-editor";
 import { PreviewPane } from "./preview-pane";
 import { VersionHistory } from "./version-history";
 import type { Template, TemplateVersion, MergeTag } from "@/types/template";
+import { toTemplateVersion, type ApiTemplateResponse } from "../_lib/templates-api";
 
 type Draft = {
   subject: string;
@@ -26,13 +27,17 @@ export function TemplateWorkspace({
   versions: initialVersions,
   mergeTags,
 }: TemplateWorkspaceProps) {
+  const [activeVersion, setActiveVersion] = useState<number | null>(
+    template.activeVersion,
+  );
   const [versions, setVersions] = useState<TemplateVersion[]>(initialVersions);
   const [isSaving, setIsSaving] = useState(false);
+  const [publishingVersionId, setPublishingVersionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<TemplateVersion | null>(
     () => {
       const active = initialVersions.find(
-        (v) => v.version === template.activeVersion,
+        (v) => v.version === activeVersion,
       );
       return active ?? initialVersions.at(-1) ?? null;
     },
@@ -50,17 +55,27 @@ export function TemplateWorkspace({
   async function handleSave(draft: Draft) {
     setIsSaving(true);
     try {
-      const newVersion = await clientJson<TemplateVersion>(
+      const response = await clientJson<ApiTemplateResponse>(
         apiEndpoints.templates.versions(template.id),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(draft),
+          body: {
+            subject: draft.subject,
+            body_text: draft.bodyText,
+            body_html: draft.bodyHtml || null,
+          },
         },
       );
-      setVersions((prev) => [...prev, newVersion]);
-      setSelectedVersion(newVersion);
-      toast.success(`Version ${newVersion.version} saved.`);
+      const mappedVersions = response.versions.map(toTemplateVersion);
+      setVersions(mappedVersions);
+      setActiveVersion(response.head_version_number);
+      const nextSelected = mappedVersions.at(-1) ?? null;
+      setSelectedVersion(nextSelected);
+      if (nextSelected) {
+        toast.success(`Version v${nextSelected.version} saved.`);
+      } else {
+        toast.success("Version saved.");
+      }
     } catch {
       toast.error("Failed to save version. Please try again.");
     } finally {
@@ -68,30 +83,28 @@ export function TemplateWorkspace({
     }
   }
 
-  async function handleRestore(version: TemplateVersion) {
-    setIsSaving(true);
+  async function handlePublish(version: TemplateVersion) {
+    setPublishingVersionId(version.id);
     try {
-      const newVersion = await clientJson<TemplateVersion>(
-        apiEndpoints.templates.versions(template.id),
+      const response = await clientJson<ApiTemplateResponse>(
+        apiEndpoints.templates.publishVersion(template.id, String(version.version)),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            subject: version.subject,
-            bodyText: version.bodyText,
-            bodyHtml: version.bodyHtml,
-          }),
         },
       );
-      setVersions((prev) => [...prev, newVersion]);
-      setSelectedVersion(newVersion);
-      toast.success(
-        `v${version.version} restored as v${newVersion.version}.`,
-      );
+      const mappedVersions = response.versions.map(toTemplateVersion);
+      setVersions(mappedVersions);
+      setActiveVersion(response.head_version_number);
+      const nextSelected =
+        mappedVersions.find((item) => item.version === version.version) ??
+        mappedVersions.at(-1) ??
+        null;
+      setSelectedVersion(nextSelected);
+      toast.success(`Version v${version.version} published.`);
     } catch {
-      toast.error("Failed to restore version. Please try again.");
+      toast.error("Failed to publish version. Please try again.");
     } finally {
-      setIsSaving(false);
+      setPublishingVersionId(null);
     }
   }
 
@@ -111,8 +124,9 @@ export function TemplateWorkspace({
       {showHistory ? (
         <VersionHistory
           versions={versions}
-          activeVersion={template.activeVersion}
-          onRestore={handleRestore}
+          activeVersion={activeVersion}
+          onPublish={handlePublish}
+          publishingVersionId={publishingVersionId}
           onSelect={setSelectedVersion}
           selectedVersion={selectedVersion}
         />

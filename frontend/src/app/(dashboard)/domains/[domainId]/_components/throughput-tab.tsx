@@ -42,7 +42,7 @@ export function ThroughputTab({
     setIsSaving(true);
     try {
       await clientJson(`/api/domains/${domainId}/throttle`, {
-        method: "PATCH",
+        method: "POST",
         body: { rateLimit: value },
       });
       setRateLimit(value);

@@ -127,6 +127,20 @@ async def test_segments_router_crud_and_preview(
     assert len(preview_payload["sample"]) == 1
     assert preview_payload["sample"][0]["id"] == active.id
 
+    evaluate_response = await auth_client.post(f"/segments/{segment_id}/evaluate")
+    assert evaluate_response.status_code == 200
+    evaluate_payload = evaluate_response.json()
+    assert evaluate_payload["total_count"] == 1
+    assert len(evaluate_payload["sample"]) == 1
+
+    duplicate_response = await auth_client.post(f"/segments/{segment_id}/duplicate")
+    assert duplicate_response.status_code == 200
+    duplicate_payload = duplicate_response.json()
+    duplicated_segment_id = duplicate_payload["id"]
+    assert duplicated_segment_id != segment_id
+    assert duplicate_payload["dsl_json"] == created_payload["dsl_json"]
+    assert duplicate_payload["name"] == "Updated segment name (Copy)"
+
     delete_response = await auth_client.delete(f"/segments/{segment_id}")
     assert delete_response.status_code == 200
 
