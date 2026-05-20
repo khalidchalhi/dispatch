@@ -14,6 +14,11 @@ export async function completeMfa(page: Page, code = "246810") {
 }
 
 export async function signInToShell(page: Page) {
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Dispatch" }).isVisible()) {
+    return;
+  }
+
   await startSignIn(page);
   await completeMfa(page);
   await expect(page).toHaveURL(/\/$/);

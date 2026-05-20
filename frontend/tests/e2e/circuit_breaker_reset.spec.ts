@@ -11,10 +11,10 @@ test.describe("Circuit breaker console", () => {
 
   test("shows all four scope headings", async ({ page }) => {
     await page.goto("/ops/circuit-breakers");
-    await expect(page.getByText("Domain")).toBeVisible();
-    await expect(page.getByText("IP pool")).toBeVisible();
-    await expect(page.getByText("Sender profile")).toBeVisible();
-    await expect(page.getByText("Account")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Domain" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "IP pool" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sender profile" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Account" })).toBeVisible();
   });
 
   test("shows open count status", async ({ page }) => {
@@ -45,16 +45,12 @@ test.describe("Circuit breaker console", () => {
   test("Last 24h filter shows recent trips", async ({ page }) => {
     await page.goto("/ops/circuit-breakers");
     await page.getByRole("button", { name: /last 24h/i }).click();
-    await expect(page.getByText("m49.dispatch.internal")).toBeVisible();
+    await expect(page.getByRole("link", { name: "m49.dispatch.internal" })).toBeVisible();
   });
 
   test("expand row shows trip timeline", async ({ page }) => {
     await page.goto("/ops/circuit-breakers");
-    const expandBtn = page
-      .getByRole("button", { name: "" })
-      .filter({ has: page.locator("[aria-expanded]") })
-      .first();
-    await expandBtn.click();
+    await page.getByRole("button", { name: /expand timeline/i }).first().click();
     await expect(page.getByText("Trip timeline")).toBeVisible();
   });
 
@@ -93,6 +89,9 @@ test.describe("Circuit breaker console", () => {
 
   test("no accessibility violations", async ({ page }) => {
     await page.goto("/ops/circuit-breakers");
+    await expect(
+      page.getByRole("heading", { name: "Circuit breakers", level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });

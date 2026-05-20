@@ -1,5 +1,6 @@
 import { isInternalApiRoute } from "@/lib/api/endpoints";
 import { toApiError, UnauthorizedError } from "@/lib/api/errors";
+import { getMockApiJson } from "@/lib/api/mock-api";
 import { redirectToLoginInBrowser } from "@/lib/auth/redirects";
 import { publicEnv } from "@/lib/env";
 
@@ -68,6 +69,18 @@ function resolveUrl(path: string) {
   return new URL(path, publicEnv.NEXT_PUBLIC_API_BASE_URL);
 }
 
+function allowsLocalMockFallback(url: URL) {
+  const currentHost = window.location.hostname;
+  const apiHost = url.hostname;
+
+  return (
+    currentHost === "localhost" ||
+    currentHost === "127.0.0.1" ||
+    apiHost === "localhost" ||
+    apiHost === "127.0.0.1"
+  );
+}
+
 async function parseResponse<T>(
   response: Response,
   method: string,
@@ -108,12 +121,26 @@ export async function clientJson<T>(
   requestHeaders.set("Accept", "application/json");
   requestHeaders.set("x-request-id", requestId);
 
-  const response = await fetch(appendQuery(resolveUrl(path), init.query), {
-    ...init,
-    body: resolveRequestBody(init.body, requestHeaders),
-    credentials: "include",
-    headers: requestHeaders,
-  });
+  const resolvedUrl = appendQuery(resolveUrl(path), init.query);
+  let response: Response;
+
+  try {
+    response = await fetch(resolvedUrl, {
+      ...init,
+      body: resolveRequestBody(init.body, requestHeaders),
+      credentials: "include",
+      headers: requestHeaders,
+    });
+  } catch (error) {
+    if (!isInternalApiRoute(path) && allowsLocalMockFallback(resolvedUrl)) {
+      const fallback = getMockApiJson(resolvedUrl, init.query);
+      if (fallback !== undefined) {
+        return fallback as T;
+      }
+    }
+
+    throw error;
+  }
 
   try {
     return await parseResponse<T>(response, method, path, requestId);

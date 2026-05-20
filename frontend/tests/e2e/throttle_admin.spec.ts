@@ -4,10 +4,11 @@ import AxeBuilder from "@axe-core/playwright";
 test.describe("Domain throughput tab", () => {
   test("throughput tab renders token bucket stats", async ({ page }) => {
     await page.goto("/domains/dom-002?tab=throughput");
-    await expect(page.getByText("Rate limit")).toBeVisible();
-    await expect(page.getByText("Tokens available")).toBeVisible();
-    await expect(page.getByText("Refill rate")).toBeVisible();
-    await expect(page.getByText("Denials / min")).toBeVisible();
+    const tokenBucket = page.getByRole("region", { name: "Token bucket status" });
+    await expect(tokenBucket.getByText("Rate limit", { exact: true })).toBeVisible();
+    await expect(tokenBucket.getByText("Tokens available")).toBeVisible();
+    await expect(tokenBucket.getByText("Refill rate")).toBeVisible();
+    await expect(tokenBucket.getByText("Denials / min")).toBeVisible();
   });
 
   test("rate limit value is displayed", async ({ page }) => {
@@ -25,8 +26,8 @@ test.describe("Domain throughput tab", () => {
     await page.goto("/domains/dom-002?tab=throughput");
     await page.getByLabel("Sends per hour").fill("50");
     await page.getByRole("button", { name: /save/i }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
-    await expect(page.getByText(/more than 50%/i)).toBeVisible();
+    const warning = page.getByRole("alert").filter({ hasText: /more than 50%/i });
+    await expect(warning).toBeVisible();
   });
 
   test("save button becomes Confirm after drastic reduction attempt", async ({
@@ -42,7 +43,9 @@ test.describe("Domain throughput tab", () => {
     await page.goto("/domains/dom-002?tab=throughput");
     await page.getByLabel("Sends per hour").fill("200");
     await page.getByRole("button", { name: /save/i }).click();
-    await expect(page.getByRole("alert")).not.toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: /more than 50%/i }),
+    ).not.toBeVisible();
   });
 
   test("recent denial events table renders", async ({ page }) => {
@@ -60,15 +63,19 @@ test.describe("Domain throughput tab", () => {
 
   test("tab nav is visible with all three tabs", async ({ page }) => {
     await page.goto("/domains/dom-002?tab=throughput");
-    await expect(page.getByRole("link", { name: "Overview" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "DNS records" })).toBeVisible();
+    const tabs = page.getByRole("navigation", { name: "Domain detail tabs" });
+    await expect(tabs.getByRole("link", { name: "Overview" })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: "DNS records" })).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Throughput" }),
+      tabs.getByRole("link", { name: "Throughput" }),
     ).toBeVisible();
   });
 
   test("no accessibility violations on throughput tab", async ({ page }) => {
     await page.goto("/domains/dom-002?tab=throughput");
+    await expect(
+      page.getByRole("heading", { name: "m48.dispatch.internal", level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });
@@ -84,9 +91,9 @@ test.describe("Ops queues page", () => {
 
   test("shows all three domains", async ({ page }) => {
     await page.goto("/ops/queues");
-    await expect(page.getByText("m47.dispatch.internal")).toBeVisible();
-    await expect(page.getByText("m48.dispatch.internal")).toBeVisible();
-    await expect(page.getByText("m49.dispatch.internal")).toBeVisible();
+    await expect(page.getByRole("link", { name: "m47.dispatch.internal" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "m48.dispatch.internal" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "m49.dispatch.internal" })).toBeVisible();
   });
 
   test("shows queue names", async ({ page }) => {
@@ -105,9 +112,9 @@ test.describe("Ops queues page", () => {
   test("search filters domain rows", async ({ page }) => {
     await page.goto("/ops/queues");
     await page.getByRole("searchbox", { name: /search domain/i }).fill("m47");
-    await expect(page.getByText("m47.dispatch.internal")).toBeVisible();
+    await expect(page.getByRole("link", { name: "m47.dispatch.internal" })).toBeVisible();
     await expect(
-      page.getByText("m48.dispatch.internal"),
+      page.getByRole("link", { name: "m48.dispatch.internal" }),
     ).not.toBeVisible();
   });
 

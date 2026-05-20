@@ -88,6 +88,7 @@ function StepRow({ step }: { step: ProvisioningStep }) {
             type="button"
             aria-expanded={expanded}
             aria-controls={`step-detail-${step.key}`}
+            aria-label={`${expanded ? "Hide" : "Show"} diagnostic for ${step.label}`}
             onClick={() => setExpanded((v) => !v)}
             className="text-text-muted hover:text-foreground"
           >

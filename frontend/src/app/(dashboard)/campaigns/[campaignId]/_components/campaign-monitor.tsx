@@ -136,7 +136,6 @@ export function CampaignMonitor({
     pollTimerRef.current = setInterval(() => {
       void pollDetail();
     }, POLL_INTERVAL_MS);
-    void pollDetail();
   }, [pollDetail, stopPolling]);
 
   useEffect(() => {
@@ -193,18 +192,15 @@ export function CampaignMonitor({
     [fetchMessagesPage],
   );
 
-  useEffect(() => {
-    void refreshMessages(statusFilter).catch(() => {
-      // Keep initial messages if refresh fails.
-    });
-  }, [refreshMessages, statusFilter]);
-
   function handleStatusChange(newStatus: CampaignStatus) {
     setDetail((prev) => ({ ...prev, status: newStatus }));
   }
 
   function handleStatusFilterChange(value: string) {
     setStatusFilter(value);
+    void refreshMessages(value).catch(() => {
+      toast.error("Failed to refresh messages.");
+    });
   }
 
   async function handleLoadMore() {

@@ -72,7 +72,7 @@ export default async function CampaignsPage({
               href={value === "all" ? "/campaigns" : `/campaigns?status=${value}`}
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                 active
-                  ? "bg-primary text-primary-foreground"
+                  ? "bg-primary primary-contrast"
                   : "bg-muted text-text-muted hover:bg-muted/80"
               }`}
               aria-current={active ? "page" : undefined}

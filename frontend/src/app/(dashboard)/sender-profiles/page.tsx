@@ -10,6 +10,8 @@ type DomainsListApiResponse = {
     name: string;
     verification_status: string;
     reputation_status: string;
+    breaker_state?: string | null;
+    circuit_breaker_state?: string | null;
     updated_at: string;
   }>;
 };
@@ -48,7 +50,10 @@ function toDomainListItem(
     id: item.id,
     name: item.name,
     status: toDomainStatus(item.verification_status, item.reputation_status),
-    breaker: "closed",
+    breaker:
+      item.breaker_state === "open" || item.circuit_breaker_state === "open"
+        ? "open"
+        : "closed",
     updatedAt: item.updated_at,
   };
 }

@@ -274,7 +274,7 @@ export function ConditionGroup({
             onClick={() => onChange({ ...group, logic: "and" })}
             className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
               group.logic === "and"
-                ? "bg-primary text-primary-foreground"
+                ? "bg-primary primary-contrast"
                 : "text-text-muted hover:text-foreground"
             }`}
           >
@@ -286,7 +286,7 @@ export function ConditionGroup({
             onClick={() => onChange({ ...group, logic: "or" })}
             className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
               group.logic === "or"
-                ? "bg-primary text-primary-foreground"
+                ? "bg-primary primary-contrast"
                 : "text-text-muted hover:text-foreground"
             }`}
           >

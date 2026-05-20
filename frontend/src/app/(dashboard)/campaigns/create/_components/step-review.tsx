@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -168,7 +168,7 @@ export function StepReview({
     [draft],
   );
 
-  async function upsertCampaign(): Promise<string> {
+  const upsertCampaign = useCallback(async (): Promise<string> => {
     const payload = buildCampaignPayload(draft);
     if (draft.campaignId) {
       const updated = await clientJson<CampaignMutationResponse>(
@@ -187,9 +187,9 @@ export function StepReview({
     });
     onChange({ campaignId: created.id });
     return created.id;
-  }
+  }, [draft, onChange]);
 
-  async function runPreflight() {
+  const runPreflight = useCallback(async () => {
     if (!canPrepareCampaign) return;
     setIsPreparing(true);
     setPreflightError(null);
@@ -208,19 +208,21 @@ export function StepReview({
       setIsPreparing(false);
       setIsRunningPreflight(false);
     }
-  }
+  }, [canPrepareCampaign, upsertCampaign]);
 
   useEffect(() => {
     let isCancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     async function run() {
       if (isCancelled || !canPrepareCampaign) return;
       await runPreflight();
     }
-    void run();
+    timer = setTimeout(() => void run(), 0);
     return () => {
       isCancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [preflightKey, canPrepareCampaign]);
+  }, [preflightKey, canPrepareCampaign, runPreflight]);
 
   const hasCritical = preflightChecks.some((check) => check.severity === "critical");
   const canLaunch =
@@ -384,8 +386,8 @@ export function StepReview({
         ) : (
           <p className="text-sm text-text-muted">
             {isRunningPreflight || isPreparing
-              ? "Running pre-launch checks…"
-              : "No pre-launch checks yet."}
+              ? "Running checks…"
+              : "No checks yet."}
           </p>
         )}
 

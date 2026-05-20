@@ -73,8 +73,9 @@ test.describe("Warmup tab — dom-001 (not started, 5x safety)", () => {
     await page.goto("/domains/dom-001?tab=warmup");
     await page.getByRole("button", { name: /edit schedule/i }).click();
     await page.getByRole("button", { name: /aggressive/i }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
-    await expect(page.getByText(/aggressive schedule warning/i)).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: /aggressive schedule warning/i }),
+    ).toBeVisible();
   });
 
   test("save disabled without confirm", async ({ page }) => {
@@ -114,8 +115,9 @@ test.describe("Warmup tab — dom-001 (not started, 5x safety)", () => {
 test.describe("Warmup tab — dom-003 (overpacing)", () => {
   test("shows overpacing alert", async ({ page }) => {
     await page.goto("/domains/dom-003?tab=warmup");
-    await expect(page.getByRole("alert")).toBeVisible();
-    await expect(page.getByText(/volume exceeding cap/i)).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: /volume exceeding cap/i }),
+    ).toBeVisible();
   });
 });
 
@@ -127,10 +129,10 @@ test.describe("Reputation tab — connected (dom-002)", () => {
 
   test("shows metric cards", async ({ page }) => {
     await page.goto("/domains/dom-002?tab=reputation");
-    await expect(page.getByText(/spam rate/i)).toBeVisible();
-    await expect(page.getByText(/domain reputation/i)).toBeVisible();
-    await expect(page.getByText(/spf pass/i)).toBeVisible();
-    await expect(page.getByText(/dkim pass/i)).toBeVisible();
+    await expect(page.getByText(/^spam rate$/i).first()).toBeVisible();
+    await expect(page.getByText(/^domain reputation$/i)).toBeVisible();
+    await expect(page.getByText(/^spf pass$/i).first()).toBeVisible();
+    await expect(page.getByText(/^dkim pass$/i).first()).toBeVisible();
   });
 
   test("shows 7-day history table", async ({ page }) => {
@@ -149,6 +151,9 @@ test.describe("Reputation tab — connected (dom-002)", () => {
     page,
   }) => {
     await page.goto("/domains/dom-002?tab=reputation");
+    await expect(
+      page.getByRole("heading", { name: "m48.dispatch.internal", level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });
@@ -169,6 +174,9 @@ test.describe("Reputation tab — disconnected (dom-001)", () => {
     page,
   }) => {
     await page.goto("/domains/dom-001?tab=reputation");
+    await expect(
+      page.getByRole("heading", { name: "m47.dispatch.internal", level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });
@@ -182,14 +190,20 @@ test.describe("Analytics — warming domains widget", () => {
 
   test("shows all 3 warming domain names", async ({ page }) => {
     await page.goto("/analytics");
-    await expect(page.getByText("m47.dispatch.internal")).toBeVisible();
-    await expect(page.getByText("m48.dispatch.internal")).toBeVisible();
-    await expect(page.getByText("m49.dispatch.internal")).toBeVisible();
+    const warmupPanel = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Domains in warmup" }),
+    });
+    await expect(warmupPanel.getByRole("link", { name: "m47.dispatch.internal" })).toBeVisible();
+    await expect(warmupPanel.getByRole("link", { name: "m48.dispatch.internal" })).toBeVisible();
+    await expect(warmupPanel.getByRole("link", { name: "m49.dispatch.internal" })).toBeVisible();
   });
 
   test("domain name links to warmup tab", async ({ page }) => {
     await page.goto("/analytics");
-    const link = page.getByRole("link", { name: "m48.dispatch.internal" });
+    const warmupPanel = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Domains in warmup" }),
+    });
+    const link = warmupPanel.getByRole("link", { name: "m48.dispatch.internal" });
     await expect(link).toHaveAttribute(
       "href",
       "/domains/dom-002?tab=warmup",

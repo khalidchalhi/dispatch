@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { CheckCircle2, AlertCircle } from "lucide-react";
@@ -64,45 +64,45 @@ export function ProvisioningWizard() {
   const [zones, setZones] = useState<DnsZone[]>([]);
   const [isLoadingZones, setIsLoadingZones] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const zoneRequestId = useRef(0);
 
   const steps = useMemo(() => getSteps(provider), [provider]);
   const currentStep = steps[stepIdx]!;
   const totalSteps = steps.length;
 
-  useEffect(() => {
-    if (!provider || provider === "manual") {
+  async function loadProviderZones(nextProvider: Exclude<ProvisioningProvider, "manual">) {
+    const requestId = zoneRequestId.current + 1;
+    zoneRequestId.current = requestId;
+    setIsLoadingZones(true);
+
+    try {
+      const response = await clientJson<unknown>(apiEndpoints.domains.zones(nextProvider));
+      if (zoneRequestId.current !== requestId) return;
+      setZones(toDnsZones(response, nextProvider));
+    } catch {
+      if (zoneRequestId.current !== requestId) return;
       setZones([]);
-      setIsLoadingZones(false);
-      return;
+      toast.error("Could not load provider zones. Please retry.");
+    } finally {
+      if (zoneRequestId.current === requestId) setIsLoadingZones(false);
     }
+  }
 
-    let cancelled = false;
-
-    async function loadZones() {
-      setIsLoadingZones(true);
-      try {
-        const response = await clientJson<unknown>(apiEndpoints.domains.zones(provider));
-        if (cancelled) return;
-        setZones(toDnsZones(response, provider));
-      } catch {
-        if (cancelled) return;
-        setZones([]);
-        toast.error("Could not load provider zones. Please retry.");
-      } finally {
-        if (!cancelled) setIsLoadingZones(false);
-      }
-    }
-
-    void loadZones();
-    return () => {
-      cancelled = true;
-    };
-  }, [provider]);
+  function resetProviderZones() {
+    zoneRequestId.current += 1;
+    setZones([]);
+    setIsLoadingZones(false);
+  }
 
   function handleProviderSelect(p: ProvisioningProvider) {
     setProvider(p);
     setZoneId(null);
     setStepIdx(1);
+    if (p === "manual") {
+      resetProviderZones();
+      return;
+    }
+    void loadProviderZones(p);
   }
 
   function handleBack() {

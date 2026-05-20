@@ -23,6 +23,7 @@ from libs.core.domains.schemas import (
     DomainProvisionRequest,
     DomainResponse,
     DomainRetireRequest,
+    DomainThrottleUpdateRequest,
     DomainVerifyResponse,
     DomainWarmupDayResponse,
     DomainWarmupExtendRequest,
@@ -153,6 +154,25 @@ async def retire_domain(
         user_agent=request.headers.get("user-agent"),
     )
     return MessageResponse(message="Domain retired")
+
+
+@router.post("/{domain_id}/throttle", response_model=DomainResponse)
+async def update_domain_throttle(
+    domain_id: str,
+    payload: DomainThrottleUpdateRequest,
+    request: Request,
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    domain_service: Annotated[DomainService, Depends(get_domain_service_dep)],
+) -> DomainResponse:
+    detail = await domain_service.update_domain_rate_limit(
+        actor=actor,
+        domain_id=domain_id,
+        rate_limit_per_hour=payload.rate_limit_per_hour,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return DomainResponse.from_model(detail.domain, dns_records=detail.dns_records)
 
 
 @router.get("/{domain_id}/warmup", response_model=DomainWarmupStatusResponse)

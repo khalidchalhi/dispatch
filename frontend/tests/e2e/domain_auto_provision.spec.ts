@@ -47,7 +47,9 @@ test.describe("Provisioning wizard — new domain", () => {
     await page.goto("/domains/new");
     await page.getByRole("button", { name: /manual/i }).click();
     await page.getByRole("button", { name: /next/i }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: /fully-qualified domain name/i }),
+    ).toBeVisible();
   });
 
   test("shows validation error for invalid domain name", async ({ page }) => {
@@ -55,7 +57,9 @@ test.describe("Provisioning wizard — new domain", () => {
     await page.getByRole("button", { name: /manual/i }).click();
     await page.getByLabel(/fully-qualified domain name/i).fill("not a domain");
     await page.getByRole("button", { name: /next/i }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: /valid domain name/i }),
+    ).toBeVisible();
   });
 
   test("back button returns to provider picker", async ({ page }) => {
@@ -180,9 +184,14 @@ test.describe("Step log — provisioning detail", () => {
 
   test("failed step expand button reveals error detail", async ({ page }) => {
     await page.goto("/domains/dom-004/provision");
-    const expandBtn = page.locator("button[aria-expanded]");
+    const expandBtn = page.getByRole("button", { name: /show diagnostic/i });
     await expandBtn.click();
-    await expect(page.getByText(/Access denied/i)).toBeVisible();
+    await expect(
+      page.locator("#step-detail-write_dns"),
+    ).toBeVisible();
+    await expect(page.locator("#step-detail-write_dns")).toContainText(
+      /Access denied/i,
+    );
   });
 
   test("in-progress attempt shows polling message", async ({ page }) => {
@@ -208,6 +217,9 @@ test.describe("Step log — provisioning detail", () => {
     page,
   }) => {
     await page.goto("/domains/dom-003/provision");
+    await expect(
+      page.getByRole("heading", { name: "Provisioning", level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });
@@ -235,7 +247,7 @@ test.describe("Provisioning audit log", () => {
 
   test("shows failed badge", async ({ page }) => {
     await page.goto("/ops/provisioning");
-    await expect(page.getByText("failed")).toBeVisible();
+    await expect(page.getByText("failed").first()).toBeVisible();
   });
 
   test("shows in progress badge", async ({ page }) => {
@@ -261,6 +273,9 @@ test.describe("Provisioning audit log", () => {
 
   test("no accessibility violations", async ({ page }) => {
     await page.goto("/ops/provisioning");
+    await expect(
+      page.getByRole("heading", { name: /provisioning/i, level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });

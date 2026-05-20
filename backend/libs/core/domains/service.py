@@ -223,6 +223,48 @@ class DomainService:
             records = await repo.list_dns_records_for_domain(domain.id)
             return DomainDetail(domain=domain, dns_records=records)
 
+    async def update_domain_rate_limit(
+        self,
+        *,
+        actor: CurrentActor,
+        domain_id: str,
+        rate_limit_per_hour: int,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> DomainDetail:
+        self._require_admin(actor)
+        if rate_limit_per_hour < 1:
+            raise ValidationError("rate_limit_per_hour must be positive")
+
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = DomainRepository(uow.require_session())
+            domain = await repo.get_domain_by_id(domain_id)
+            if domain is None:
+                raise NotFoundError("Domain not found")
+
+            before_rate_limit = domain.rate_limit_per_hour
+            await repo.update_domain_fields(
+                domain_id=domain.id,
+                values={"rate_limit_per_hour": rate_limit_per_hour},
+            )
+            await self._write_audit_log(
+                repo=repo,
+                actor=actor,
+                action="domain.throttle.update",
+                resource_type="domain",
+                resource_id=domain.id,
+                before_state={"rate_limit_per_hour": before_rate_limit},
+                after_state={"rate_limit_per_hour": rate_limit_per_hour},
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+
+            refreshed = await repo.get_domain_by_id(domain.id)
+            if refreshed is None:
+                raise NotFoundError("Domain not found")
+            records = await repo.list_dns_records_for_domain(refreshed.id)
+            return DomainDetail(domain=refreshed, dns_records=records)
+
     async def verify_domain(
         self,
         *,

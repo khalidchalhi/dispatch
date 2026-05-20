@@ -75,9 +75,9 @@ type BreakerTimelineApiResponse = {
   }>;
 };
 
-function isWithin24h(ts: string | null): boolean {
+function isWithin24h(ts: string | null, referenceMs: number): boolean {
   if (!ts) return false;
-  return Date.now() - new Date(ts).getTime() < 24 * 60 * 60 * 1000;
+  return referenceMs - new Date(ts).getTime() < 24 * 60 * 60 * 1000;
 }
 
 function toTripEvents(
@@ -131,7 +131,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
   }, []);
 
   useEffect(() => {
-    void poll();
+    const initialPoll = setTimeout(() => void poll(), 0);
     pollTimerRef.current = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
     function onVisibility() {
@@ -141,6 +141,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
+      clearTimeout(initialPoll);
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -167,14 +168,19 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
     }
   }
 
-  async function handleReset(_: string) {
+  async function handleReset() {
     await poll();
     setResetEntry(null);
   }
 
+  const tripTimes = entries.flatMap((entry) =>
+    entry.trippedAt ? [new Date(entry.trippedAt).getTime()] : [],
+  );
+  const latestTripMs = tripTimes.length > 0 ? Math.max(...tripTimes) : 0;
+
   const filtered = entries.filter((entry) => {
     if (filter === "open") return entry.state === "open";
-    if (filter === "last_24h") return isWithin24h(entry.trippedAt);
+    if (filter === "last_24h") return isWithin24h(entry.trippedAt, latestTripMs);
     if (filter === "high_bounce_rate") return entry.reason === "high_bounce_rate";
     if (filter === "high_complaint_rate") return entry.reason === "high_complaint_rate";
     return true;
@@ -202,7 +208,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
               aria-pressed={filter === option.value}
               className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                 filter === option.value
-                  ? "border-primary bg-primary text-primary-foreground"
+                  ? "border-primary bg-primary primary-contrast"
                   : "border-border text-text-muted hover:text-foreground"
               }`}
             >
@@ -247,7 +253,9 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                     <th className="pb-2 pr-4 font-medium">Tripped at</th>
                     <th className="pb-2 pr-4 font-medium">Reason</th>
                     <th className="pb-2 pr-4 font-medium">Auto-reset</th>
-                    <th className="pb-2 font-medium"></th>
+                    <th className="pb-2 font-medium">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -262,6 +270,7 @@ export function BreakerConsole({ initialEntries }: BreakerConsoleProps) {
                               type="button"
                               aria-expanded={expandedId === entry.id}
                               aria-controls={`timeline-${entry.id}`}
+                              aria-label={`${expandedId === entry.id ? "Collapse" : "Expand"} timeline for ${entry.entityName}`}
                               onClick={() => toggleExpand(entry.id)}
                               className="text-text-muted hover:text-foreground"
                             >

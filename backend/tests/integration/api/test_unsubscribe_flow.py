@@ -58,6 +58,9 @@ async def test_public_unsubscribe_rejects_forged_signature(
     token_response = await auth_client.post(f"/contacts/{contact_id}/unsubscribe-token")
     assert token_response.status_code == 200
     valid_token = token_response.json()["token"]
+    assert token_response.json()["unsubscribe_url"].endswith(
+        f"/unsubscribe?t={valid_token}"
+    )
 
     valid_unsubscribe = await auth_client.post(
         "/contacts/unsubscribe/public",

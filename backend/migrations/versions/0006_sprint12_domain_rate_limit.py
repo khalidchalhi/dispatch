@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
+from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision: str = "0006_domain_rate_limit"
@@ -20,15 +21,18 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "domains",
-        sa.Column(
-            "rate_limit_per_hour",
-            sa.Integer(),
-            nullable=False,
-            server_default=sa.text("150"),
-        ),
-    )
+    bind = op.get_bind()
+    existing_columns = {column["name"] for column in inspect(bind).get_columns("domains")}
+    if "rate_limit_per_hour" not in existing_columns:
+        op.add_column(
+            "domains",
+            sa.Column(
+                "rate_limit_per_hour",
+                sa.Integer(),
+                nullable=False,
+                server_default=sa.text("150"),
+            ),
+        )
     op.alter_column("domains", "rate_limit_per_hour", server_default=None)
 
 

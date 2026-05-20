@@ -80,11 +80,39 @@ async def disable_user(
     return MessageResponse(message="User disabled")
 
 
+@router.post("/{user_id}/reset-mfa", response_model=MessageResponse)
+async def reset_user_mfa(
+    user_id: str,
+    request: Request,
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    user_service: Annotated[UserService, Depends(get_user_service_dep)],
+) -> MessageResponse:
+    await user_service.reset_user_mfa(
+        actor=actor,
+        user_id=user_id,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return MessageResponse(message="MFA reset")
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(
     actor: Annotated[CurrentActor, Depends(get_current_actor)],
 ) -> UserResponse:
     return UserResponse.from_model(actor.user)
+
+
+@router.get("/{user_id}", response_model=UserResponse)
+async def get_user(
+    user_id: str,
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    _: Annotated[User, Depends(require_admin)],
+    user_service: Annotated[UserService, Depends(get_user_service_dep)],
+) -> UserResponse:
+    user = await user_service.get_user_by_id(actor=actor, user_id=user_id)
+    return UserResponse.from_model(user)
 
 
 @router.post("/me/password", response_model=MessageResponse)

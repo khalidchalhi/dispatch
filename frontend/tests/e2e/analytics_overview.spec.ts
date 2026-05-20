@@ -16,12 +16,13 @@ test.describe("Analytics overview", () => {
 
   test("renders all 6 KPI cards", async ({ page }) => {
     await page.goto("/analytics");
-    await expect(page.getByText("Sends today")).toBeVisible();
-    await expect(page.getByText("7-day sends")).toBeVisible();
-    await expect(page.getByText("Bounce rate")).toBeVisible();
-    await expect(page.getByText("Complaint rate")).toBeVisible();
-    await expect(page.getByText("Open rate")).toBeVisible();
-    await expect(page.getByText("Click rate")).toBeVisible();
+    const kpis = page.getByLabel("Key performance indicators");
+    await expect(kpis.getByText("Sends today")).toBeVisible();
+    await expect(kpis.getByText("7-day sends")).toBeVisible();
+    await expect(kpis.getByText("Bounce rate")).toBeVisible();
+    await expect(kpis.getByText("Complaint rate")).toBeVisible();
+    await expect(kpis.getByText("Open rate")).toBeVisible();
+    await expect(kpis.getByText("Click rate")).toBeVisible();
   });
 
   test("shows top campaigns table", async ({ page }) => {

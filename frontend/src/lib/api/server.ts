@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { getServerEnv, publicEnv } from "@/lib/env";
 import { isInternalApiRoute } from "@/lib/api/endpoints";
 import { toApiError } from "@/lib/api/errors";
+import { getMockApiJson } from "@/lib/api/mock-api";
 
 type QueryValue = string | number | boolean | null | undefined;
 type RequestBody = BodyInit | Record<string, unknown> | null | undefined;
@@ -118,12 +119,24 @@ export async function serverJson<T>(path: string, init: ApiRequestOptions = {}) 
     requestHeaders.set("cookie", forwardedCookies);
   }
 
-  const response = await fetch(resolvedUrl, {
-    ...init,
-    body: resolveRequestBody(init.body, requestHeaders),
-    cache: init.cache ?? "no-store",
-    headers: requestHeaders,
-  });
+  let response: Response;
+  try {
+    response = await fetch(resolvedUrl, {
+      ...init,
+      body: resolveRequestBody(init.body, requestHeaders),
+      cache: init.cache ?? "no-store",
+      headers: requestHeaders,
+    });
+  } catch (error) {
+    if (serverEnv.DISPATCH_WEB_ENABLE_DEV_SESSION) {
+      const fallback = getMockApiJson(resolvedUrl, init.query);
+      if (fallback !== undefined) {
+        return fallback as T;
+      }
+    }
+
+    throw error;
+  }
 
   return parseResponse<T>(response, method, path, requestId);
 }

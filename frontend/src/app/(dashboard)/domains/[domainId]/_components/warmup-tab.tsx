@@ -120,6 +120,11 @@ export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
   }
 
   const remainingDays = warmup.schedule.days.slice(warmup.currentDay, warmup.currentDay + 7);
+  const extensionDayCount = Number.parseInt(extensionDays, 10);
+  const extensionLabel =
+    Number.isFinite(extensionDayCount) && extensionDayCount > 0
+      ? `Extend by ${extensionDayCount} ${extensionDayCount === 1 ? "day" : "days"}`
+      : "Extend warmup";
 
   return (
     <div className="grid gap-6">
@@ -268,7 +273,7 @@ export function WarmupTab({ domainId, warmup }: WarmupTabProps) {
                 onClick={() => void handleExtend()}
               >
                 <TrendingUp className="mr-2 h-3.5 w-3.5" aria-hidden />
-                Extend warmup
+                {extensionLabel}
               </Button>
               <Button
                 variant="outline"

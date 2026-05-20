@@ -48,6 +48,10 @@ class DomainRetireRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class DomainThrottleUpdateRequest(BaseModel):
+    rate_limit_per_hour: int = Field(ge=1, le=1_000_000)
+
+
 class DomainWarmupExtendRequest(BaseModel):
     days: int = Field(ge=1, le=180)
 

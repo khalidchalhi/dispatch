@@ -104,6 +104,54 @@ async def test_domains_router_create_verify_retire_roundtrip(
 
 
 @pytest.mark.asyncio
+async def test_domains_router_updates_throttle_rate_limit(
+    auth_client: AsyncClient,
+    auth_user_factory: UserFactory,
+) -> None:
+    await auth_user_factory(
+        email="admin-throttle@example.com",
+        password="correct-password-value",
+        role="admin",
+    )
+
+    login_response = await auth_client.post(
+        "/auth/login",
+        json={"email": "admin-throttle@example.com", "password": "correct-password-value"},
+    )
+    assert login_response.status_code == 200
+
+    create_response = await auth_client.post(
+        "/domains",
+        json={
+            "name": "throttle.dispatch.test",
+            "dns_provider": "manual",
+            "parent_domain": "dispatch.test",
+            "ses_region": "us-east-1",
+            "default_configuration_set_name": "api-default",
+        },
+    )
+    assert create_response.status_code == 201
+    domain_id = create_response.json()["id"]
+
+    update_response = await auth_client.post(
+        f"/domains/{domain_id}/throttle",
+        json={"rate_limit_per_hour": 750},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["rate_limit_per_hour"] == 750
+
+    get_response = await auth_client.get(f"/domains/{domain_id}")
+    assert get_response.status_code == 200
+    assert get_response.json()["rate_limit_per_hour"] == 750
+
+    invalid_response = await auth_client.post(
+        f"/domains/{domain_id}/throttle",
+        json={"rate_limit_per_hour": 0},
+    )
+    assert invalid_response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_domains_router_provisioning_endpoints_enqueue_and_status(
     auth_client: AsyncClient,
     auth_user_factory: UserFactory,

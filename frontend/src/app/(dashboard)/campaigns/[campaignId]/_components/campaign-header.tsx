@@ -133,7 +133,10 @@ export function CampaignHeader({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+      <div
+        aria-label="Campaign KPI tiles"
+        className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8"
+      >
         {KPI_KEYS.map(({ key, label }) => (
           <KpiTile key={key} label={label} value={detail.kpis[key]} />
         ))}

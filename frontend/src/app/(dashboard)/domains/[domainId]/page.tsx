@@ -39,6 +39,8 @@ type DomainDetailApiResponse = {
   name: string;
   verification_status: string;
   reputation_status: string;
+  breaker_state?: string | null;
+  circuit_breaker_state?: string | null;
   created_at: string;
   updated_at: string;
   dns_records: Array<{
@@ -112,12 +114,16 @@ function toDnsRecordStatus(status: string): DnsRecordStatus {
   return "pending";
 }
 
+function toBreakerState(status: string | null | undefined): DomainDetail["breaker"] {
+  return status === "open" ? "open" : "closed";
+}
+
 function toDomainDetail(api: DomainDetailApiResponse): DomainDetail {
   return {
     id: api.id,
     name: api.name,
     status: toDomainStatus(api.verification_status, api.reputation_status),
-    breaker: "closed",
+    breaker: toBreakerState(api.breaker_state ?? api.circuit_breaker_state),
     createdAt: api.created_at,
     updatedAt: api.updated_at,
     dnsRecords: api.dns_records.map((record) => ({

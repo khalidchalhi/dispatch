@@ -4,9 +4,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from apps.api.deps import get_contact_service_dep, get_current_actor, require_admin
+from apps.api.deps import (
+    get_contact_service_dep,
+    get_current_actor,
+    get_settings_dep,
+    require_admin,
+)
 from libs.core.auth.models import User
 from libs.core.auth.schemas import CurrentActor, MessageResponse
+from libs.core.config import Settings
 from libs.core.contacts.schemas import (
     ContactCreateRequest,
     ContactDeleteRequest,
@@ -147,13 +153,13 @@ async def unsubscribe_contact(
 @router.post("/{contact_id}/unsubscribe-token", response_model=ContactUnsubscribeTokenResponse)
 async def create_unsubscribe_token(
     contact_id: str,
-    request: Request,
     actor: Annotated[CurrentActor, Depends(get_current_actor)],
     _: Annotated[User, Depends(require_admin)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
     service: Annotated[ContactService, Depends(get_contact_service_dep)],
 ) -> ContactUnsubscribeTokenResponse:
     token = await service.create_unsubscribe_token(actor=actor, contact_id=contact_id)
-    unsubscribe_url = f"{str(request.base_url).rstrip('/')}/contacts/unsubscribe/public"
+    unsubscribe_url = f"{settings.public_unsubscribe_base_url.rstrip('/')}/unsubscribe?t={token}"
     return ContactUnsubscribeTokenResponse(token=token, unsubscribe_url=unsubscribe_url)
 
 

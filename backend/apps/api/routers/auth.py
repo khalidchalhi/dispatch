@@ -4,15 +4,22 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from apps.api.deps import get_auth_service_dep, get_settings_dep
+from apps.api.deps import (
+    get_auth_service_dep,
+    get_current_actor,
+    get_settings_dep,
+    get_user_service_dep,
+)
 from libs.core.auth.schemas import (
+    ApiKeyResponse,
     AuthFlow,
+    CurrentActor,
     LoginRequest,
     LoginResponse,
     MessageResponse,
     MFAVerifyRequest,
 )
-from libs.core.auth.service import AuthService
+from libs.core.auth.service import AuthService, UserService
 from libs.core.config import Settings
 from libs.core.errors import ValidationError
 
@@ -94,3 +101,12 @@ async def logout(
     await auth_service.logout(session_cookie=request.cookies.get(settings.session_cookie_name))
     response.delete_cookie(settings.session_cookie_name, path="/")
     return MessageResponse(message="Logged out")
+
+
+@router.get("/api-keys", response_model=list[ApiKeyResponse])
+async def list_api_keys(
+    actor: Annotated[CurrentActor, Depends(get_current_actor)],
+    user_service: Annotated[UserService, Depends(get_user_service_dep)],
+) -> list[ApiKeyResponse]:
+    api_keys = await user_service.list_api_keys(actor=actor)
+    return [ApiKeyResponse.from_model(api_key) for api_key in api_keys]

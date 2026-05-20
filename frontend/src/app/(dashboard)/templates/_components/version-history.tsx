@@ -54,8 +54,9 @@ function computeDiff(a: string, b: string): DiffLine[] {
 type VersionHistoryProps = {
   versions: TemplateVersion[];
   activeVersion: number | null;
-  onPublish: (version: TemplateVersion) => void;
-  publishingVersionId: string | null;
+  onPublish?: (version: TemplateVersion) => void;
+  publishingVersionId?: string | null;
+  onRestore?: (version: TemplateVersion) => void;
   onSelect: (version: TemplateVersion) => void;
   selectedVersion: TemplateVersion | null;
 };
@@ -64,13 +65,17 @@ export function VersionHistory({
   versions,
   activeVersion,
   onPublish,
-  publishingVersionId,
+  publishingVersionId = null,
+  onRestore,
   onSelect,
   selectedVersion,
 }: VersionHistoryProps) {
   const [diffBase, setDiffBase] = useState<TemplateVersion | null>(null);
 
   const sorted = [...versions].sort((a, b) => b.version - a.version);
+  const actionLabel = onRestore ? "Restore" : "Publish";
+  const pendingActionLabel = onRestore ? "Restoring…" : "Publishing…";
+  const handleVersionAction = onRestore ?? onPublish;
 
   return (
     <div className="grid gap-4">
@@ -118,10 +123,14 @@ export function VersionHistory({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => onPublish(v)}
-                  disabled={publishingVersionId === v.id || v.version === activeVersion}
+                  onClick={() => handleVersionAction?.(v)}
+                  disabled={
+                    !handleVersionAction ||
+                    publishingVersionId === v.id ||
+                    (!onRestore && v.version === activeVersion)
+                  }
                 >
-                  {publishingVersionId === v.id ? "Publishing…" : "Publish"}
+                  {publishingVersionId === v.id ? pendingActionLabel : actionLabel}
                 </Button>
               </div>
             </li>

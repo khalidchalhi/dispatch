@@ -20,10 +20,11 @@ test.describe("Campaigns list", () => {
 
   test("status tabs are visible", async ({ page }) => {
     await page.goto("/campaigns");
-    await expect(page.getByRole("navigation", { name: /filter by status/i })).toBeVisible();
-    await expect(page.getByText("All")).toBeVisible();
-    await expect(page.getByText("Draft")).toBeVisible();
-    await expect(page.getByText("Running")).toBeVisible();
+    const tabs = page.getByRole("navigation", { name: /filter by status/i });
+    await expect(tabs).toBeVisible();
+    await expect(tabs.getByRole("link", { name: "All" })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: /Draft/ })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: /Running/ })).toBeVisible();
   });
 
   test("filtering by status shows only matching campaigns", async ({ page }) => {
@@ -79,7 +80,7 @@ test.describe("Campaign create wizard", () => {
     await page.goto("/campaigns/create");
     await page.getByLabel(/campaign name/i).fill("E2E test campaign");
     await page.getByRole("button", { name: /continue/i }).click();
-    await expect(page.getByText(/sender profile/i)).toBeVisible();
+    await expect(page.getByText("Sender profile", { exact: true })).toBeVisible();
   });
 
   test("Back button returns to previous step", async ({ page }) => {
@@ -131,10 +132,11 @@ test.describe("Campaign create wizard", () => {
     await page.getByRole("button", { name: /continue/i }).click();
     await page.getByLabel(/template/i).selectOption({ index: 1 });
     await page.getByRole("button", { name: /continue/i }).click();
-    // audience
-    await page.getByRole("button", { name: /continue/i }).click().catch(() => {});
-    await page.getByRole("button", { name: /continue to review/i }).click().catch(() => {});
-    // may end up on review or audience depending on state
+    await page.locator("#audience-segment").selectOption({ index: 1 });
+    await page.getByRole("button", { name: /continue/i }).click();
+    await page.getByRole("button", { name: /continue to review/i }).click();
+    await expect(page.getByRole("heading", { name: "Review" })).toBeVisible();
+    await expect(page.locator("dl").filter({ hasText: "Test campaign review" })).toBeVisible();
   });
 
   test("launch dialog requires typing campaign name to confirm", async ({ page }) => {

@@ -227,6 +227,8 @@ Full architecture and design documentation lives in [`Docs/`](Docs/).
 | [21_domain_model.md](Docs/21_domain_model.md) | Business domain model — the contract that aligns backend, frontend, and database |
 | [22_aws_deployment_and_configuration.md](Docs/22_aws_deployment_and_configuration.md) | AWS deployment and configuration guide |
 | [23_project_technical_explanation.md](Docs/23_project_technical_explanation.md) | Brief technical explanation of the whole project |
+| [24_current_changes_tests_and_readiness.md](Docs/24_current_changes_tests_and_readiness.md) | Current implementation changes, test status, known gaps, and marketing-readiness checklist |
+| [25_beginner_aws_cloudflare_domain_setup.md](Docs/25_beginner_aws_cloudflare_domain_setup.md) | Beginner AWS, Cloudflare, SES, DNS, and domain buying setup guide |
 
 Sprint plans: [Docs/backend_sprints/](Docs/backend_sprints/) · [Docs/frontend_sprints/](Docs/frontend_sprints/)
 

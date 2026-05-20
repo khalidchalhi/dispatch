@@ -16,11 +16,12 @@ test.describe("Campaign monitoring page", () => {
 
   test("shows all 8 KPI tiles", async ({ page }) => {
     await page.goto("/campaigns/cmp-003");
-    await expect(page.getByText("Queued")).toBeVisible();
-    await expect(page.getByText("Sent")).toBeVisible();
-    await expect(page.getByText("Delivered")).toBeVisible();
-    await expect(page.getByText("Bounced")).toBeVisible();
-    await expect(page.getByText("Clicked")).toBeVisible();
+    const kpis = page.getByLabel("Campaign KPI tiles");
+    await expect(kpis.getByText("Queued")).toBeVisible();
+    await expect(kpis.getByText("Sent")).toBeVisible();
+    await expect(kpis.getByText("Delivered")).toBeVisible();
+    await expect(kpis.getByText("Bounced")).toBeVisible();
+    await expect(kpis.getByText("Clicked")).toBeVisible();
   });
 
   test("shows running status badge", async ({ page }) => {
@@ -101,8 +102,9 @@ test.describe("Campaign monitoring page", () => {
     await page.goto("/campaigns/cmp-003");
     const initialRows = await page.locator("[aria-pressed]").count();
     await page.getByRole("button", { name: /load more/i }).click();
-    const newRows = await page.locator("[aria-pressed]").count();
-    expect(newRows).toBeGreaterThan(initialRows);
+    await expect
+      .poll(() => page.locator("[aria-pressed]").count())
+      .toBeGreaterThan(initialRows);
   });
 
   test("status filter narrows message list", async ({ page }) => {

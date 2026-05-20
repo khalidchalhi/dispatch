@@ -531,6 +531,17 @@ class UserService:
     async def get_user(self, *, actor: CurrentActor) -> User:
         return actor.user
 
+    async def get_user_by_id(self, *, actor: CurrentActor, user_id: str) -> User:
+        if actor.user.role != "admin":
+            raise PermissionDeniedError("Admin role required")
+
+        async with self._session_factory() as session:
+            repo = AuthRepository(session)
+            user = await repo.get_user_by_id(user_id)
+            if user is None:
+                raise NotFoundError("User not found")
+            return user
+
     async def disable_user(
         self,
         *,
@@ -561,6 +572,38 @@ class UserService:
                     "deleted_at": user.deleted_at.isoformat() if user.deleted_at else None
                 },
                 after_state={"deleted_at": datetime.now(UTC).isoformat(), "reason": reason},
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+
+    async def reset_user_mfa(
+        self,
+        *,
+        actor: CurrentActor,
+        user_id: str,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> None:
+        if actor.user.role != "admin":
+            raise PermissionDeniedError("Admin role required")
+
+        async with UnitOfWork(self._session_factory) as uow:
+            repo = AuthRepository(uow.require_session())
+            user = await repo.get_user_by_id(user_id)
+            if user is None:
+                raise NotFoundError("User not found")
+
+            had_mfa = bool(user.mfa_secret)
+            await repo.clear_mfa_secret(user.id)
+            revoked = await repo.revoke_sessions_for_user(user.id)
+            await repo.write_audit_log(
+                actor_type=actor.actor_type,
+                actor_id=actor.user.id,
+                action="user.mfa.reset",
+                resource_type="user",
+                resource_id=user.id,
+                before_state={"mfa_enabled": had_mfa},
+                after_state={"mfa_enabled": False, "revoked_sessions": revoked},
                 ip_address=ip_address,
                 user_agent=user_agent,
             )

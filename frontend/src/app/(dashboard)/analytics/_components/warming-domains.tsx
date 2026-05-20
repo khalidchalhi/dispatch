@@ -72,7 +72,7 @@ export function WarmingDomains({ domains }: WarmingDomainsProps) {
                     {" / "}
                     {d.todayCap.toLocaleString()}
                   </p>
-                  <p className="text-text-muted">sends today</p>
+                  <p className="text-text-muted">warmup today</p>
                 </div>
               </div>
             </div>

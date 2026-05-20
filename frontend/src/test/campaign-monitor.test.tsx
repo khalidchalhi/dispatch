@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { CampaignMonitor } from "@/app/(dashboard)/campaigns/[campaignId]/_components/campaign-monitor";
 import { CampaignHeader } from "@/app/(dashboard)/campaigns/[campaignId]/_components/campaign-header";
@@ -428,7 +428,8 @@ describe("CampaignMonitor", () => {
     );
   });
 
-  it("loads more messages when Load more is clicked", () => {
+  it("loads more messages when Load more is clicked", async () => {
+    vi.useRealTimers();
     render(
       <CampaignMonitor initialDetail={detail} initialPage={initialPage} />,
     );
@@ -437,9 +438,11 @@ describe("CampaignMonitor", () => {
       .getAllByRole("button")
       .filter((el) => el.hasAttribute("aria-pressed")).length;
     fireEvent.click(loadMore);
-    const newCount = screen
-      .getAllByRole("button")
-      .filter((el) => el.hasAttribute("aria-pressed")).length;
-    expect(newCount).toBeGreaterThan(initialCount);
+    await waitFor(() => {
+      const newCount = screen
+        .getAllByRole("button")
+        .filter((el) => el.hasAttribute("aria-pressed")).length;
+      expect(newCount).toBeGreaterThan(initialCount);
+    });
   });
 });

@@ -16,7 +16,17 @@ vi.mock("next/navigation", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/lib/api/client", () => ({
-  clientJson: vi.fn().mockResolvedValue({ id: "dom-new", name: "test.example.com" }),
+  clientJson: vi.fn((path: string) => {
+    if (path.includes("zones")) {
+      return Promise.resolve({
+        items: [
+          { id: "zone-cf-001", name: "dispatch.internal", provider: "cloudflare" },
+          { id: "zone-cf-002", name: "internal.dispatch.io", provider: "cloudflare" },
+        ],
+      });
+    }
+    return Promise.resolve({ id: "dom-new", name: "test.example.com" });
+  }),
 }));
 
 // ─── getMockZones ─────────────────────────────────────────────────────────────
@@ -214,7 +224,7 @@ describe("ProvisioningWizard", () => {
     ).toBeInTheDocument();
   });
 
-  it("automated confirm shows 'Provision' button", () => {
+  it("automated confirm shows 'Provision' button", async () => {
     render(<ProvisioningWizard />);
     fireEvent.click(screen.getByRole("button", { name: /cloudflare/i }));
     fireEvent.change(screen.getByLabelText(/fully-qualified domain name/i), {
@@ -222,7 +232,7 @@ describe("ProvisioningWizard", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
-    const zones = screen.getAllByRole("radio", { hidden: true });
+    const zones = await screen.findAllByRole("radio", { hidden: true });
     fireEvent.click(zones[0]!.closest("label")!);
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     expect(

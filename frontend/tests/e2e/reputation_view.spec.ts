@@ -22,12 +22,13 @@ test.describe("Domain reputation view", () => {
 
   test("renders domain table with all columns", async ({ page }) => {
     await page.goto("/analytics/reputation");
-    await expect(page.getByText("Bounce%")).toBeVisible();
-    await expect(page.getByText("Complaint%")).toBeVisible();
-    await expect(page.getByText("Delivery%")).toBeVisible();
-    await expect(page.getByText("Breaker")).toBeVisible();
-    await expect(page.getByText("Warmup stage")).toBeVisible();
-    await expect(page.getByText("Risk")).toBeVisible();
+    const table = page.getByRole("table", { name: "Domain reputation metrics" });
+    await expect(table.getByRole("columnheader", { name: "Bounce%" })).toBeVisible();
+    await expect(table.getByRole("columnheader", { name: "Complaint%" })).toBeVisible();
+    await expect(table.getByRole("columnheader", { name: "Delivery%" })).toBeVisible();
+    await expect(table.getByRole("columnheader", { name: "Breaker" })).toBeVisible();
+    await expect(table.getByRole("columnheader", { name: "Warmup stage" })).toBeVisible();
+    await expect(table.getByRole("columnheader", { name: "Risk" })).toBeVisible();
   });
 
   test("shows all 3 domains", async ({ page }) => {
@@ -39,12 +40,16 @@ test.describe("Domain reputation view", () => {
 
   test("critical domain has critical badge", async ({ page }) => {
     await page.goto("/analytics/reputation");
-    await expect(page.getByText("critical")).toBeVisible();
+    const table = page.getByRole("table", { name: "Domain reputation metrics" });
+    const row = table.getByRole("row").filter({ hasText: "m49.dispatch.internal" });
+    await expect(row.getByText("critical", { exact: true })).toBeVisible();
   });
 
   test("open breaker has open badge", async ({ page }) => {
     await page.goto("/analytics/reputation");
-    await expect(page.getByText("open").first()).toBeVisible();
+    const table = page.getByRole("table", { name: "Domain reputation metrics" });
+    const row = table.getByRole("row").filter({ hasText: "m49.dispatch.internal" });
+    await expect(row.getByText("open", { exact: true })).toBeVisible();
   });
 
   test("domain name links to domain detail page", async ({ page }) => {
@@ -55,6 +60,9 @@ test.describe("Domain reputation view", () => {
 
   test("no accessibility violations", async ({ page }) => {
     await page.goto("/analytics/reputation");
+    await expect(
+      page.getByRole("heading", { name: "Domain reputation", level: 1 }),
+    ).toBeVisible();
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toHaveLength(0);
   });
